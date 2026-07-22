@@ -1,9 +1,17 @@
-# YAP-XFISH
+# YAP-XFISH 轻量 · 便携 ·原生 Rust · 无 Electron的 Sing-box 图形客户端
+
 
 Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面板 + 系统托盘。  
 绿色便携、单文件风格分发（`yap-xfish.exe` + `sing-box.exe`），数据与配置放在 exe 同目录的 `data/` 下。
+主要目的是尽可能小的内存占用，毕竟现在内存价格上天了。
+常态内存占非常小
+学习的[UIforFreedom/UIF](https://github.com/UIforFreedom/UIF)项目，但是增加了订阅自动更新的功能。
+<img width="1035" height="65" alt="PixPin_2026-07-22_20-30-35" src="https://github.com/user-attachments/assets/96e94b40-307e-41fb-8e3d-3018d2bfda66" />
 
-> 仓库路径历史名可能仍为 `proxy-rs`；**产品名 / 二进制 / 托盘品牌均为 YAP-XFISH**。
+少占一截内存，多留一截流畅。 YAP-XFISH——把重量留给线路，不留给壳子。
+
+
+
 
 ---
 
@@ -42,13 +50,16 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 
 ---
 
-## 截图说明（建议自行补充）
+## 截图说明
 
-发布时建议在本段插入：
 
-1. 管理面板 — 仪表盘  
-2. 节点页（4 列卡片 + ⚡）  
-3. 托盘右键菜单  
+
+ <img width="2364" height="1110" alt="图_20260722_200154_103" src="https://github.com/user-attachments/assets/19bed367-1085-4bba-980e-939c231c8d6f" />
+ <img width="3785" height="1443" alt="图_20260722_203544_823" src="https://github.com/user-attachments/assets/fda69a54-1a05-4437-90f8-61c356bbaa4b" />
+<img width="3777" height="1454" alt="图_20260722_203627_698" src="https://github.com/user-attachments/assets/8fe6c72c-fa86-459c-9c12-6797e1b6a465" />
+<img width="1398" height="2303" alt="图_20260722_203805_704" src="https://github.com/user-attachments/assets/2fe19a8b-1b03-4928-b43e-049fcc8fd9ff" />
+ <img width="658" height="542" alt="PixPin_2026-07-22_20-02-26" src="https://github.com/user-attachments/assets/55c1359a-cb29-479f-a11e-b1cb068af35d" />
+
 
 ---
 
