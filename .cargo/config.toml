@@ -1,0 +1,6 @@
+# 静态链接 MSVC CRT，使产物为单文件 exe，不依赖外部 VC++ 运行库。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

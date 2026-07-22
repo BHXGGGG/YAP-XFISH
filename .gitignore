@@ -1,0 +1,68 @@
+# ===== Rust / Cargo =====
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# ===== 嵌入式前端构建产物（build.rs 会在 cargo build 前要求 npm run build） =====
+/webui/dist/
+/webui/node_modules/
+
+# ===== 前端本地配置 =====
+# （Vite 默认不生成 .env.local，但万一加了 vite 配置覆盖可以放这）
+/webui/.env
+/webui/.env.local
+/webui/.env.*.local
+
+# ===== 运行时数据（sing-box 写入的数据目录；按 main.rs 的 data_dir 推断） =====
+/data/
+/release/proxy-rs-v0.1.0-windows-amd64/data/
+# 任何位置冒出来的 data 目录都别入库（程序运行时写入的订阅/配置/日志）
+data/
+
+# ===== sing-box / proxy 运行时产物 =====
+*.log
+*.pid
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== Windows 特定 =====
+desktop.ini
+$RECYCLE.BIN/
+
+# ===== Python 缓存（smoketest/*.py） =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ===== 临时文件 =====
+*.tmp
+*.bak
+*.orig
+
+# ===== 工具目录（不属于本项目） =====
+/.workbuddy/
+/.workbuddy/**
+/.scratch/
+/.scratch/**
+
+# ===== 运行时旁路产物 =====
+# target 下偶发的 data（若未走 /target/ 忽略时的兜底）
+**/target/**/data/
+proxy_rs.pdb
+*.pdb
+
+# ===== 大型可执行产物 =====
+# sing-box 是第三方内核二进制（约 40MB+），不入库；用时放到 exe 同目录即可
+/release/sing-box.exe
+/release/**/sing-box.exe
+# 发布包里的自研 exe 体积小，默认保留便于本地冒烟
+# /release/proxy-rs.exe
