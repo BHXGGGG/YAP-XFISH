@@ -78,7 +78,9 @@ pub async fn update_all_enabled(state: &AppState) -> AppResult<()> {
             .map(|s| s.id.clone())
             .collect()
     };
-    state.log_with("sub", "info",
+    state.log_with(
+        "sub",
+        "info",
         format!("触发全部更新: 共 {} 个订阅（含停用）", ids.len()),
     );
     for id in ids {
@@ -148,13 +150,15 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
             n
         })
         .collect();
+    // 解析到的实际节点数（无论订阅启用与否都要回写到 node_count）
+    let parsed_count = new_nodes.len();
 
     emit(
         state,
         &sub_id,
         "updating",
         60,
-        &format!("合并 {} 个节点", new_nodes.len()),
+        &format!("合并 {} 个节点", parsed_count),
         None,
         None,
     );
@@ -179,7 +183,9 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
 
     emit(state, &sub_id, "updating", 80, "应用配置并重启核心", None, None);
 
-    // 6. 应用：核心在运行时 reload（带配置回滚），未运行时仅写配置待下次启动
+    // 6. 应用：核心在运行时 reload（带配置回滚），未运行时仅写配置待下次启动。
+    // 注意：运行时配置用 visible_profile（排除停用订阅节点），但 node_count 必须
+    // 用解析到的实际节点数 / 完整 profile 统计——否则「全部更新」停用订阅时会写成 0。
     let app_cfg = state.config.read().await.clone();
     let profile_now = state.visible_profile().await;
     let running = state.core.is_running().await;
@@ -192,9 +198,26 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
 
     match apply_result {
         Ok(()) => {
-            let cnt = profile_count_for(&sub_id, &profile_now);
+            // 优先按完整 profile 统计（含停用订阅节点）；兜底用解析数。
+            let cnt = {
+                let p = state.profile.read().await;
+                let c = profile_count_for(&sub_id, &p);
+                if c > 0 {
+                    c
+                } else {
+                    parsed_count
+                }
+            };
             record(state, &sub_id, UpdateStatus::Success, cnt, "更新成功").await;
-            emit(state, &sub_id, "success", 100, "更新成功", Some(cnt), Some(chrono::Local::now().to_rfc3339()));
+            emit(
+                state,
+                &sub_id,
+                "success",
+                100,
+                "更新成功",
+                Some(cnt),
+                Some(chrono::Local::now().to_rfc3339()),
+            );
             // 实时推送最新节点列表，前端无需刷新即可看到订阅拉取的节点。
             state.broadcast_profile().await;
             Ok(())
@@ -251,7 +274,11 @@ async fn record(state: &AppState, id: &str, status: UpdateStatus, count: usize, 
 }
 
 fn profile_count_for(id: &str, profile: &AppProfile) -> usize {
-    profile.nodes.iter().filter(|n| n.subscription_id.as_deref() == Some(id)).count()
+    profile
+        .nodes
+        .iter()
+        .filter(|n| n.subscription_id.as_deref() == Some(id))
+        .count()
 }
 
 /// 选中节点失效时回退到第一个节点；无任何节点则置空（渲染时落入 direct）。

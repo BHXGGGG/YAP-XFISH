@@ -40,8 +40,14 @@ async function refreshMem() {
       <p class="hint">代理端口供系统/浏览器「代理设置」中填写（如 <code>127.0.0.1:{{ form.proxy_port }}</code>）。它与上面的 Clash API 端口<strong>不能相同</strong>。修改后保存即生效（运行中会自动重建核心）。</p>
       <label>核心程序路径<input v-model="form.core_binary" type="text" /></label>
       <label>数据目录<input v-model="form.data_dir" type="text" disabled /></label>
+      <label class="ck"><input type="checkbox" v-model="form.system_proxy" /> 启用系统代理（指向本机代理端口）</label>
       <label class="ck"><input type="checkbox" v-model="form.enable_tun" /> 启用 TUN（需管理员权限）</label>
       <label class="ck"><input type="checkbox" v-model="form.autostart" /> 开机启动</label>
+      <p class="hint">
+        系统代理会写入 Windows「Internet 选项」，让系统/浏览器流量走
+        <code>127.0.0.1:{{ form.proxy_port }}</code>。关闭程序或取消勾选会自动还原。
+        TUN 与系统代理可同时开启，但一般二选一即可。
+      </p>
     </div>
 
     <h3 style="margin-top:24px">延迟测试</h3>

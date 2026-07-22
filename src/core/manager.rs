@@ -40,7 +40,7 @@ impl CoreManager {
 
     /// 解析实际使用的 sing-box 核心路径。
     ///
-    /// 自包含分发优先：sing-box.exe 与 proxy-rs.exe 同目录（或同目录 `core/`）。
+    /// 自包含分发优先：sing-box.exe 与 yap-xfish.exe 同目录（或同目录 `core/`）。
     /// 这样移动整个程序文件夹时，核心路径自动跟随新位置，不会停留在旧绝对路径导致报错。
     /// 其次使用配置中指定的路径（相对路径按 exe 目录解析），最后回退到 `<data_dir>/core/`。
     fn resolve_core_binary(configured: &PathBuf, data_dir: &PathBuf) -> PathBuf {
@@ -99,7 +99,7 @@ impl CoreManager {
         std::fs::write(&self.inner.config_path, s)?;
 
         // 解析实际使用的核心路径：优先配置路径，回退到 exe 同目录/子目录/data_dir。
-        // 这样自包含分发包（sing-box.exe 与 proxy-rs.exe 同目录）无需用户手动放置即可运行。
+        // 这样自包含分发包（sing-box.exe 与 yap-xfish.exe 同目录）无需用户手动放置即可运行。
         let data_dir = self
             .inner
             .config_path
@@ -110,7 +110,7 @@ impl CoreManager {
 
         if !binary.exists() {
             return Err(anyhow::anyhow!(
-                "未找到 sing-box 核心程序 (sing-box.exe)。\n请确认 sing-box.exe 已与 proxy-rs.exe 位于同一目录，或在设置中指定正确路径。\n实际查找路径: {}",
+                "未找到 sing-box 核心程序 (sing-box.exe)。\n请确认 sing-box.exe 已与 yap-xfish.exe 位于同一目录，或在设置中指定正确路径。\n实际查找路径: {}",
                 binary.display()
             )
             .into());

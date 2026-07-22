@@ -208,23 +208,43 @@ fn parse_clash_proxy(v: &Value) -> Option<Node> {
             node.uuid = v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string());
             node.security = v.get("cipher").and_then(|x| x.as_str()).map(|s| s.to_string());
             node.tls = v.get("tls").and_then(|t| t.as_bool());
-            node.sni = v.get("servername").and_then(|s| s.as_str()).map(|s| s.to_string());
+            node.sni = v
+                .get("servername")
+                .or_else(|| v.get("sni"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
             node.network = v.get("network").and_then(|n| n.as_str()).map(|s| s.to_string());
+            apply_clash_tls_extras(&mut node, v);
             maybe_clash_ws(&mut node, v);
         }
         "vless" => {
             node.uuid = v.get("uuid").and_then(|x| x.as_str()).map(|s| s.to_string());
-            node.flow = v.get("flow").and_then(|x| x.as_str()).map(|s| s.to_string());
+            // 空 flow 丢弃：部分订阅写 `flow: ""`
+            node.flow = v
+                .get("flow")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             node.tls = v.get("tls").and_then(|t| t.as_bool());
-            node.sni = v.get("servername").and_then(|s| s.as_str()).map(|s| s.to_string());
+            node.sni = v
+                .get("servername")
+                .or_else(|| v.get("sni"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
             node.network = v.get("network").and_then(|n| n.as_str()).map(|s| s.to_string());
+            apply_clash_tls_extras(&mut node, v);
             maybe_clash_ws(&mut node, v);
         }
         "trojan" => {
             node.password = v.get("password").and_then(|x| x.as_str()).map(|s| s.to_string());
-            node.sni = v.get("sni").and_then(|s| s.as_str()).map(|s| s.to_string());
+            node.sni = v
+                .get("sni")
+                .or_else(|| v.get("servername"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
             node.tls = Some(true);
             node.network = v.get("network").and_then(|n| n.as_str()).map(|s| s.to_string());
+            apply_clash_tls_extras(&mut node, v);
             maybe_clash_ws(&mut node, v);
         }
         "hysteria2" => {
@@ -255,6 +275,52 @@ fn clash_type_to_kind(t: &str) -> String {
         "wireguard" => "wireguard".into(),
         "ssh" => "ssh".into(),
         other => other.to_string(),
+    }
+}
+
+/// 解析 Clash Meta 的 TLS 扩展字段：
+/// - `client-fingerprint` → utls fingerprint
+/// - `reality-opts.public-key` / `short-id` → REALITY
+/// - `skip-cert-verify` → insecure
+///
+/// 这些字段对 vision + 伪装 SNI 的 VLESS 节点是必需的；缺失时 sing-box 会把
+/// 服务端返回的 HTTP 页面当成 VLESS 协议头，报 `unknown version: 72`（'H'）。
+fn apply_clash_tls_extras(node: &mut Node, v: &Value) {
+    if let Some(fp) = v
+        .get("client-fingerprint")
+        .or_else(|| v.get("client_fingerprint"))
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        node.fingerprint = Some(fp.to_string());
+    }
+    if let Some(skip) = v
+        .get("skip-cert-verify")
+        .or_else(|| v.get("skip_cert_verify"))
+        .and_then(|x| x.as_bool())
+    {
+        node.skip_cert_verify = Some(skip);
+    }
+    // reality-opts: { public-key, short-id }
+    if let Some(ro) = v.get("reality-opts").or_else(|| v.get("reality_opts")) {
+        let pbk = ro
+            .get("public-key")
+            .or_else(|| ro.get("public_key"))
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let sid = ro
+            .get("short-id")
+            .or_else(|| ro.get("short_id"))
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if pbk.is_some() || sid.is_some() {
+            node.reality = Some(true);
+            node.tls = Some(true);
+            node.reality_public_key = pbk;
+            node.reality_short_id = sid;
+        }
     }
 }
 
@@ -459,7 +525,11 @@ fn apply_query(node: &mut Node, query: &str) {
     let mut host: Option<String> = None;
     let mut flow: Option<String> = None;
     let mut sni: Option<String> = None;
+    let mut fingerprint: Option<String> = None;
+    let mut reality_public_key: Option<String> = None;
+    let mut reality_short_id: Option<String> = None;
     let mut tls = false;
+    let mut reality = false;
     for pair in query.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             let v_dec = urldecode(v);
@@ -467,7 +537,14 @@ fn apply_query(node: &mut Node, query: &str) {
             // 传给 sing-box 会导致 transport 写 `path: ""` / `Host: ""`，握手时服务端拒识。
             let v_opt = if v_dec.is_empty() { None } else { Some(v_dec) };
             match k {
-                "security" => tls = v == "tls" || v == "reality",
+                "security" => {
+                    if v == "tls" {
+                        tls = true;
+                    } else if v == "reality" {
+                        tls = true;
+                        reality = true;
+                    }
+                }
                 "type" => {
                     if v == "ws" {
                         node.network = Some("ws".into());
@@ -478,12 +555,24 @@ fn apply_query(node: &mut Node, query: &str) {
                 "flow" => flow = v_opt,
                 "sni" => sni = v_opt,
                 "peer" if sni.is_none() => sni = v_opt,
+                "fp" | "fingerprint" => fingerprint = v_opt,
+                "pbk" | "publicKey" | "public-key" => reality_public_key = v_opt,
+                "sid" | "shortId" | "short-id" => reality_short_id = v_opt,
+                "insecure" | "allowInsecure" => {
+                    if v == "1" || v.eq_ignore_ascii_case("true") {
+                        node.skip_cert_verify = Some(true);
+                    }
+                }
                 _ => {}
             }
         }
     }
     if node.network.as_deref() == Some("ws") || path.is_some() || host.is_some() {
-        node.ws = Some(WsOptions { path, host, headers: None });
+        node.ws = Some(WsOptions {
+            path,
+            host,
+            headers: None,
+        });
         if node.network.is_none() {
             node.network = Some("ws".into());
         }
@@ -492,6 +581,14 @@ fn apply_query(node: &mut Node, query: &str) {
     node.flow = flow;
     if sni.is_some() {
         node.sni = sni;
+    }
+    if fingerprint.is_some() {
+        node.fingerprint = fingerprint;
+    }
+    if reality || reality_public_key.is_some() {
+        node.reality = Some(true);
+        node.reality_public_key = reality_public_key;
+        node.reality_short_id = reality_short_id;
     }
 }
 

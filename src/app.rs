@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 /// 应用级配置（端口、内核路径、数据目录等），持久化到 app_config.json。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    /// Web 管理面板端口（默认 9527）。
+    /// Web 管理面板端口（默认 9677）。
     #[serde(default = "default_web_port")]
     pub web_port: u16,
     /// 核心程序路径；缺省时（旧配置/部分配置）回退为 exe 同目录 sing-box.exe。
@@ -32,6 +32,9 @@ pub struct AppConfig {
     pub api_secret: String,
     #[serde(default)]
     pub enable_tun: bool,
+    /// 启用 Windows 系统代理（指向本机 proxy_port）。默认关闭。
+    #[serde(default)]
+    pub system_proxy: bool,
     #[serde(default)]
     pub autostart: bool,
     /// 延迟测试：测试 URL（多为可访问的轻量地址，如 gstatic generate_204）。
@@ -51,13 +54,14 @@ impl Default for AppConfig {
         // 自包含分发：核心默认与 exe 同目录，免去用户手动放置
         let core_binary = exe_dir().join("sing-box.exe");
         AppConfig {
-            web_port: 9527,
+            web_port: 9677,
             core_binary,
             data_dir: data_dir.clone(),
             clash_api_port: 9999,
             proxy_port: default_proxy_port(),
             api_secret: random_secret(),
             enable_tun: false,
+            system_proxy: false,
             autostart: false,
             latency_test_url: default_latency_url(),
             latency_concurrency: default_latency_concurrency(),
@@ -71,7 +75,7 @@ fn default_proxy_port() -> u16 {
 }
 
 fn default_web_port() -> u16 {
-    9527
+    9677
 }
 
 fn default_clash_api_port() -> u16 {
@@ -159,6 +163,11 @@ pub enum AppEvent {
     /// 订阅列表整体更新（增删/批量操作后由后端推送，避免前端缓存与后端不一致）。
     SubscriptionsRefresh {
         subscriptions: Vec<Subscription>,
+    },
+    /// 系统代理 / TUN 等运行时相关配置变更（托盘勾选与设置页联动）。
+    Config {
+        system_proxy: bool,
+        enable_tun: bool,
     },
 }
 
@@ -322,7 +331,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
 }
 
 /// 当前 exe 所在目录。自包含分发时使用它来定位同包内的 sing-box 核心，
-/// 使 proxy-rs.exe 与 sing-box.exe 放在同一目录即可直接运行，无需额外配置。
+/// 使 yap-xfish.exe 与 sing-box.exe 放在同一目录即可直接运行，无需额外配置。
 pub fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()

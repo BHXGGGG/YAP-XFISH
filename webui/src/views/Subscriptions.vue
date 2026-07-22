@@ -8,7 +8,7 @@ const emit = defineEmits<{ (e: 'refresh'): void }>()
 const form = reactive({
   name: '',
   url: '',
-  interval: 'every30_min',
+  interval: 'every6_hours',
   enabled: true,
   uaPreset: 'default',
   userAgent: '',
@@ -57,8 +57,10 @@ async function load() {
 async function add() {
   if (!form.url) { toast('请填写订阅 URL'); return }
   try {
+    // 名称未填：去掉 https:// 或 http:// 后取前 7 个字符（与后端规则一致）
+    const name = (form.name || '').trim() || defaultSubNameFromUrl(form.url)
     await api.addSubscription({
-      name: form.name || form.url,
+      name,
       url: form.url,
       interval: form.interval,
       enabled: form.enabled,
@@ -71,6 +73,14 @@ async function add() {
     toast('订阅已添加')
     // 列表由后端 WS 实时推送，无需主动 load()
   } catch (e: any) { toast(e.message) }
+}
+
+/** 订阅名未填时：去掉 http(s):// 后取前 7 个字符 */
+function defaultSubNameFromUrl(url: string): string {
+  const t = (url || '').trim()
+  const rest = t.replace(/^https?:\/\//i, '').replace(/^\/+/, '')
+  const name = [...rest].slice(0, 7).join('')
+  return name || '订阅'
 }
 
 async function del(id: string) {

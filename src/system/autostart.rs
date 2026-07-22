@@ -4,7 +4,7 @@ use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const VALUE_NAME: &str = "ProxyRs";
+const VALUE_NAME: &str = "YAP-XFISH";
 
 /// 设置/取消开机启动。enabled=true 写入当前 exe 路径（含空格自动加引号）；false 删除该值。
 pub fn set_autostart(enabled: bool) -> anyhow::Result<()> {

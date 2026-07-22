@@ -1,11 +1,11 @@
-ProxyRS v0.1.0 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.1.0 —— Windows Sing-box 代理客户端（自包含分发）
 
 【使用】
-1. 把本 zip 解压到任意目录（例如 D:\ProxyRS）。
-2. 保持 proxy-rs.exe 与 sing-box.exe 在同一目录。
-3. 双击 proxy-rs.exe 启动（不会弹出黑色控制台窗口）。
+1. 把本 zip 解压到任意目录（例如 D:\YAP-XFISH）。
+2. 保持 yap-xfish.exe 与 sing-box.exe 在同一目录。
+3. 双击 yap-xfish.exe 启动（不会弹出黑色控制台窗口）。
 4. 管理面板：点击托盘图标「打开管理面板」会自动用默认浏览器打开（无黑框），
-   或自行访问 http://127.0.0.1:9527 。
+   或自行访问 http://127.0.0.1:9677 。
 5. 关闭浏览器不影响后台代理；托盘图标可一键启停。
 
 【便携 / 数据位置】
@@ -15,10 +15,10 @@ ProxyRS v0.1.0 —— Windows Sing-box 代理客户端（自包含分发）
 - 首次启动若检测到旧版 `%LOCALAPPDATA%\Proxy` 数据，会自动复制过来（不删除原目录），订阅与配置不丢失。
 
 【核心定位】
-程序优先使用与 proxy-rs.exe 同一目录的 sing-box.exe，因此移动整个程序文件夹时
+程序优先使用与 yap-xfish.exe 同一目录的 sing-box.exe，因此移动整个程序文件夹时
 核心路径会自动跟随，不会停留在旧绝对路径。查找顺序：
-  1. 与 proxy-rs.exe 同一目录的 sing-box.exe（优先，随文件夹移动）
-  2. 与 proxy-rs.exe 同一目录的 core\sing-box.exe
+  1. 与 yap-xfish.exe 同一目录的 sing-box.exe（优先，随文件夹移动）
+  2. 与 yap-xfish.exe 同一目录的 core\sing-box.exe
   3. 设置中指定的 core_binary（相对路径按 exe 目录解析；绝对路径仍存在也可用）
   4. <exe 目录>\data\core\sing-box.exe
 把两个 exe 放在同一目录即可开箱即用。
@@ -34,6 +34,14 @@ ProxyRS v0.1.0 —— Windows Sing-box 代理客户端（自包含分发）
   （均可在「设置」中修改）。socks5/http 节点以自身为代理真实走出口测速；其余类型退化为 TCP 连接探测。
   延迟 < 500ms 绿色显示，可点「按延迟排序」升序排列。
 
+【订阅默认】
+- 名称未填：去掉 https:// 或 http:// 后取前 7 个字符
+- 更新周期默认：6 小时（可改为仅手动 / 30 分钟 / 1 小时等）
+
+【托盘状态点】
+- 系统代理开启：图标右上角亮紫色圆点
+- TUN 开启：图标左上角亮黄色圆点
+
 【版本】
-- proxy-rs v0.1.0
-- sing-box v1.13.14 (windows/amd64)
+- YAP-XFISH v0.1.0
+- sing-box（请使用官方 windows/amd64 发布包，与 yap-xfish.exe 同目录）

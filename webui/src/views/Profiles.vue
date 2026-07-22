@@ -26,7 +26,7 @@ function protocolMeta(kind: string) {
   return PROTOCOL_META[kind] || { label: kind || '?', color: '#64748b' }
 }
 
-// 仅显示「启用订阅 + 手动节点」；停用订阅的节点不出现在列表中（其数据仍保留，重新启用即可恢复）。
+// 仅显示「启用订阅 + 手动节点」；停用订阅的节点不出现在列表中。
 const visibleNodes = computed(() => {
   const enabled = new Set(
     store.subscriptions.filter((s: any) => s.enabled).map((s: any) => s.id)
@@ -36,12 +36,10 @@ const visibleNodes = computed(() => {
   )
 })
 
-// 按延迟排序（未测速的排最后）。开关由「按延迟排序」按钮控制。
 const sortByLatency = ref(false)
 const displayedNodes = computed(() => {
   if (!sortByLatency.value) return visibleNodes.value
   return [...visibleNodes.value].sort((a: any, b: any) => {
-    // ok 的按数值升序；超时的排 ok 之后；未测速永远最后
     const rank = (n: any) => (n.latency_status === 'ok' ? 0 : n.latency_status === 'timeout' ? 1 : 2)
     const ra = rank(a), rb = rank(b)
     if (ra !== rb) return ra - rb
@@ -52,6 +50,7 @@ const displayedNodes = computed(() => {
 })
 
 async function sel(id: string) {
+  if (id === store.profile.selected_node) return
   try { await api.selectNode(id); toast('已选择节点') } catch (e: any) { toast(e.message) }
 }
 async function setMode(m: string) {
@@ -65,7 +64,9 @@ async function testAll() {
   })
   try { await api.testAllLatency(); toast('已开始测速（结果实时刷新）') } catch (e: any) { toast(e.message) }
 }
-async function testOne(id: string) {
+async function testOne(id: string, ev?: Event) {
+  // 阻止冒泡：测速图标点击不应触发卡片选中
+  if (ev) ev.stopPropagation()
   const n = visibleNodes.value.find((x: any) => x.id === id)
   if (n) {
     n.testing = true
@@ -89,19 +90,33 @@ async function testOne(id: string) {
       暂无节点。请在「订阅」中添加订阅，或后续手动导入。
     </div>
 
-    <!-- 3 列网格。每个节点卡片：协议 tag + 名称（首行）、server:port（次行）、延迟（第三行）、底部两按钮。 -->
+    <!-- 节点卡片：点击整卡选中；右上角 ⚡ 图标测速；不再显示「测速/当前/选择」文字按钮。 -->
     <div class="nodes-grid">
       <div
         v-for="n in displayedNodes"
         :key="n.id"
         class="node-card"
         :class="{ sel: n.id === store.profile.selected_node, testing: n.testing }"
+        role="button"
+        tabindex="0"
+        :title="n.id === store.profile.selected_node ? '当前节点' : '点击选择此节点'"
+        @click="sel(n.id)"
+        @keydown.enter.prevent="sel(n.id)"
+        @keydown.space.prevent="sel(n.id)"
       >
         <div class="card-head">
           <span class="proto-tag" :style="{ background: protocolMeta(n.type).color }">
             {{ protocolMeta(n.type).label }}
           </span>
           <span class="node-name" :title="n.name">{{ n.name }}</span>
+          <button
+            class="icon-btn"
+            :class="{ spinning: n.testing }"
+            :disabled="n.testing"
+            title="测速"
+            aria-label="测速"
+            @click="testOne(n.id, $event)"
+          >⚡</button>
         </div>
         <div class="card-server" :title="n.server + ':' + n.port">
           {{ n.server }}:{{ n.port }}
@@ -116,31 +131,25 @@ async function testOne(id: string) {
           <span v-else-if="n.latency_status === 'timeout'" class="meta-timeout">不可达</span>
           <span v-else class="meta-untested">未测速</span>
         </div>
-        <div class="card-actions">
-          <button class="mini" @click="testOne(n.id)" :disabled="n.testing">测速</button>
-          <button
-            class="mini"
-            :class="{ primary: n.id !== store.profile.selected_node }"
-            :disabled="n.id === store.profile.selected_node"
-            @click="sel(n.id)"
-          >{{ n.id === store.profile.selected_node ? '当前' : '选择' }}</button>
-        </div>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-/* 3 列网格（响应式：宽屏 3 列 / 中屏 2 列 / 窄屏 1 列） */
+/* 4 列网格（响应式：宽屏 4 列 / 中屏 3 列 / 窄屏 2 列 / 手机 1 列） */
 .nodes-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
+  .nodes-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
   .nodes-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 640px) {
+@media (max-width: 560px) {
   .nodes-grid { grid-template-columns: 1fr; }
 }
 
@@ -153,7 +162,12 @@ async function testOne(id: string) {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  transition: border-color .15s, box-shadow .15s;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+  cursor: pointer;
+  user-select: none;
+}
+.node-card:hover {
+  border-color: #93c5fd;
 }
 .node-card.sel {
   border-color: var(--primary);
@@ -182,10 +196,41 @@ async function testOne(id: string) {
   text-overflow: ellipsis;
 }
 .card-latency { font-size: 12px; min-height: 18px; }
-.card-actions { display: flex; gap: 6px; margin-top: 4px; }
-.card-actions .mini { flex: 1; padding: 4px 8px; font-size: 12px; }
 
-/* 协议标签：醒目彩色（实色块 + 白色字） */
+/* 测速图标按钮：仅图标，无「测速」文字 */
+.icon-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
+}
+.icon-btn:hover:not(:disabled) {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+.icon-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.icon-btn.spinning {
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+
+/* 协议标签 */
 .proto-tag {
   display: inline-block;
   padding: 1px 7px;
@@ -197,11 +242,9 @@ async function testOne(id: string) {
   flex-shrink: 0;
 }
 
-/* 延迟颜色分级（< 200 绿 / 200-500 黄 / ≥ 500 红） */
 .good { color: #16a34a; font-weight: 700; }
 .mid  { color: #f59e0b; font-weight: 700; }
 .bad  { color: #dc2626; font-weight: 700; }
-
 .meta-timeout  { color: #dc2626; }
 .meta-untested { color: #9ca3af; }
 .meta-testing  { color: #2563eb; }

@@ -14,6 +14,8 @@ pub struct StatusResp {
     pub running: bool,
     pub mode: ProxyMode,
     pub current_node: Option<String>,
+    /// 当前节点显示名（与节点列表 `name` 一致；找不到时回退为 id）。
+    pub current_node_name: Option<String>,
     pub traffic_up: u64,
     pub traffic_down: u64,
     pub node_count: usize,
@@ -21,20 +23,39 @@ pub struct StatusResp {
     pub elevated: bool,
     /// 当前进程工作集内存（MB），用于空闲态内存剖析。
     pub mem_mb: f32,
+    /// 系统代理是否启用。
+    pub system_proxy: bool,
+    /// TUN 是否启用（配置项；实际生效还依赖提权）。
+    pub enable_tun: bool,
 }
 
 pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<StatusResp>> {
     let st = state.status.read().await;
     let mem = crate::system::mem::memory_info();
+    let cfg = state.config.read().await;
+    // 把 current_node（id）解析成节点列表中的 name，仪表盘显示名称与节点页一致。
+    let current_node_name = {
+        let p = state.profile.read().await;
+        st.current_node.as_ref().map(|id| {
+            p.nodes
+                .iter()
+                .find(|n| &n.id == id)
+                .map(|n| n.name.clone())
+                .unwrap_or_else(|| id.clone())
+        })
+    };
     Ok(Json(StatusResp {
         running: st.running,
         mode: st.mode.clone(),
         current_node: st.current_node.clone(),
+        current_node_name,
         traffic_up: st.traffic_up,
         traffic_down: st.traffic_down,
         node_count: state.visible_profile().await.nodes.len(),
         elevated: crate::system::admin::is_elevated(),
         mem_mb: (mem.working_set_bytes as f32) / (1024.0 * 1024.0),
+        system_proxy: cfg.system_proxy,
+        enable_tun: cfg.enable_tun,
     }))
 }
 
@@ -257,6 +278,8 @@ pub async fn list_subscriptions(
 
 #[derive(serde::Deserialize)]
 pub struct AddSubscriptionReq {
+    /// 订阅显示名；留空时后端按 URL 规则自动生成（去掉 http(s):// 后前 7 个字符）。
+    #[serde(default)]
     pub name: String,
     pub url: String,
     #[serde(default)]
@@ -267,13 +290,38 @@ pub struct AddSubscriptionReq {
     pub user_agent: Option<String>,
 }
 
+/// 订阅名未填写时的默认值：去掉 URL 前导 `https://` / `http://` 后取前 7 个字符。
+/// 剩余不足 7 个字符则取全部；去掉协议后为空则回退为 `"订阅"`。
+fn default_subscription_name_from_url(url: &str) -> String {
+    let rest = url
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| url.trim().strip_prefix("http://"))
+        .unwrap_or_else(|| url.trim());
+    let rest = rest.trim_start_matches('/');
+    let name: String = rest.chars().take(7).collect();
+    if name.is_empty() {
+        "订阅".to_string()
+    } else {
+        name
+    }
+}
+
 pub async fn add_subscription(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddSubscriptionReq>,
 ) -> AppResult<Json<Subscription>> {
+    let name = {
+        let n = req.name.trim();
+        if n.is_empty() {
+            default_subscription_name_from_url(&req.url)
+        } else {
+            n.to_string()
+        }
+    };
     let sub = Subscription {
         id: gen_id(),
-        name: req.name,
+        name,
         url: req.url,
         interval: req.interval,
         enabled: req.enabled,
@@ -288,7 +336,9 @@ pub async fn add_subscription(
         subs.push(sub.clone());
         crate::subscription::manager::save_subscriptions(&state.data_dir, &subs)?;
     }
-    state.log_with("sub", "info",
+    state.log_with(
+        "sub",
+        "info",
         format!(
             "添加订阅: name={} url={} enabled={} interval={:?}",
             sub.name, sub.url, sub.enabled, sub.interval
@@ -297,7 +347,9 @@ pub async fn add_subscription(
     // 广播新列表，避免前端缓存与后端不一致。
     {
         let subs = state.subscriptions.read().await;
-        state.emit(AppEvent::SubscriptionsRefresh { subscriptions: subs.clone() });
+        state.emit(AppEvent::SubscriptionsRefresh {
+            subscriptions: subs.clone(),
+        });
     }
     Ok(Json(sub))
 }
@@ -501,11 +553,12 @@ pub async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(cfg): Json<AppConfig>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let (tun_changed, autostart_changed, proxy_port_changed, web_port_changed) = {
+    let (tun_changed, autostart_changed, sysproxy_changed, proxy_port_changed, web_port_changed) = {
         let cur = state.config.read().await;
         (
             cur.enable_tun != cfg.enable_tun,
             cur.autostart != cfg.autostart,
+            cur.system_proxy != cfg.system_proxy || cur.proxy_port != cfg.proxy_port,
             cur.proxy_port != cfg.proxy_port,
             cur.web_port != cfg.web_port,
         )
@@ -518,8 +571,13 @@ pub async fn update_config(
     state.log(
         "info",
         format!(
-            "保存设置: TUN={} 自启={} 代理端口={} Web端口={} ClashAPI端口={}",
-            cfg.enable_tun, cfg.autostart, cfg.proxy_port, cfg.web_port, cfg.clash_api_port
+            "保存设置: TUN={} 系统代理={} 自启={} 代理端口={} Web端口={} ClashAPI端口={}",
+            cfg.enable_tun,
+            cfg.system_proxy,
+            cfg.autostart,
+            cfg.proxy_port,
+            cfg.web_port,
+            cfg.clash_api_port
         ),
     );
     if web_port_changed {
@@ -532,21 +590,56 @@ pub async fn update_config(
     if autostart_changed {
         match crate::system::autostart::set_autostart(cfg.autostart) {
             Ok(_) => {
-                let msg = if cfg.autostart { "已启用开机启动" } else { "已关闭开机启动" };
+                let msg = if cfg.autostart {
+                    "已启用开机启动"
+                } else {
+                    "已关闭开机启动"
+                };
                 state.log_with("config", "info", msg);
             }
             Err(e) => state.log_with("config", "error", format!("开机启动设置失败: {e}")),
         };
     }
+    // 系统代理开关 / 端口变化 → 同步 WinINET。
+    if sysproxy_changed {
+        let r = if cfg.system_proxy {
+            crate::system::sysproxy::enable(cfg.proxy_port)
+        } else {
+            crate::system::sysproxy::disable()
+        };
+        match r {
+            Ok(_) => {
+                let msg = if cfg.system_proxy {
+                    format!("已启用系统代理 → 127.0.0.1:{}", cfg.proxy_port)
+                } else {
+                    "已关闭系统代理".into()
+                };
+                state.log_with("config", "info", msg);
+            }
+            Err(e) => state.log_with("config", "error", format!("系统代理设置失败: {e}")),
+        }
+    }
     // 开启 TUN 但未提权时提示：sing-box 需要管理员权限才能创建虚拟网卡。
     if tun_changed && cfg.enable_tun && !crate::system::admin::is_elevated() {
-        state.log("warn", "已开启 TUN，但当前未以管理员身份运行，sing-box 无法创建虚拟网卡。请通过托盘菜单「以管理员身份运行」重新启动。");
+        state.log(
+            "warn",
+            "已开启 TUN，但当前未以管理员身份运行，sing-box 无法创建虚拟网卡。请通过托盘菜单「以管理员身份运行」重新启动。",
+        );
     }
     // 端口/协议等变更后重建核心配置：核心运行时 reload 立即生效，未运行时仅写 config.json。
+    // proxy_port 变化也走这条路径（sysproxy 已同步端口，核心 inbound 也需更新）。
+    let _ = proxy_port_changed;
     regen_config(&state).await;
+    // 广播配置变更，前端右上角指示灯 / 设置勾选可即时刷新。
+    state.emit(AppEvent::Config {
+        system_proxy: cfg.system_proxy,
+        enable_tun: cfg.enable_tun,
+    });
     Ok(Json(serde_json::json!({
         "ok": true,
         "elevated": crate::system::admin::is_elevated(),
+        "system_proxy": cfg.system_proxy,
+        "enable_tun": cfg.enable_tun,
     })))
 }
 

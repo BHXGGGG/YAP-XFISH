@@ -136,7 +136,8 @@ fn normalize_kind(kind: &str) -> &str {
 }
 
 /// 将内部 Node 转换为 sing-box outbound。覆盖常用协议，未知协议走 extra 透传。
-fn node_to_outbound(node: &Node) -> Value {
+/// 公开给 latency（UIF 风格临时 core + Clash delay API）复用同一渲染逻辑。
+pub fn node_to_outbound(node: &Node) -> Value {
     let tag = &node.id;
     let mut out = match normalize_kind(&node.kind) {
         "shadowsocks" => json!({
@@ -154,6 +155,7 @@ fn node_to_outbound(node: &Node) -> Value {
                 "uuid": node.uuid.clone().unwrap_or_default(),
                 "security": node.security.clone().unwrap_or_else(|| "auto".into()),
             });
+            apply_tls(&mut v, node, false);
             apply_transport(&mut v, node);
             v
         }
@@ -163,12 +165,13 @@ fn node_to_outbound(node: &Node) -> Value {
                 "server": node.server,
                 "server_port": node.port,
                 "uuid": node.uuid.clone().unwrap_or_default(),
-                "flow": node.flow.clone().unwrap_or_default(),
-                "tls": { "enabled": node.tls.unwrap_or(true) },
             });
-            if let Some(sni) = &node.sni {
-                v["tls"]["server_name"] = json!(sni);
+            // flow 仅在非空时写入（xtls-rprx-vision 等）；空字符串会让部分内核异常
+            if let Some(flow) = node.flow.as_ref().filter(|s| !s.is_empty()) {
+                v["flow"] = json!(flow);
             }
+            // VLESS 默认开 TLS（订阅里 tls:true / security=tls|reality 时也会置 true）
+            apply_tls(&mut v, node, true);
             apply_transport(&mut v, node);
             v
         }
@@ -178,11 +181,8 @@ fn node_to_outbound(node: &Node) -> Value {
                 "server": node.server,
                 "server_port": node.port,
                 "password": node.password.clone().unwrap_or_default(),
-                "tls": { "enabled": true },
             });
-            if let Some(sni) = &node.sni {
-                v["tls"]["server_name"] = json!(sni);
-            }
+            apply_tls(&mut v, node, true);
             apply_transport(&mut v, node);
             v
         }
@@ -255,6 +255,61 @@ fn node_to_outbound(node: &Node) -> Value {
         }
     }
     out
+}
+
+/// 应用 TLS 配置（含 REALITY / utls fingerprint / insecure）。
+///
+/// 关键：大量机场 VLESS 使用 `flow=xtls-rprx-vision` + 伪装 SNI + REALITY。
+/// 若只写 `tls.enabled + server_name` 而丢掉 `reality`/`utls`，握手会落到真实
+/// HTTPS 站点（如 itunes），服务端回 HTTP，sing-box 报 `unknown version: 72`（'H'）。
+///
+/// `default_enable`：协议默认是否启用 TLS（vless/trojan 为 true；vmess 看 node.tls）。
+fn apply_tls(v: &mut Value, node: &Node, default_enable: bool) {
+    let enabled = node.tls.unwrap_or(default_enable)
+        || node.reality.unwrap_or(false)
+        || node.reality_public_key.is_some();
+    if !enabled && node.fingerprint.is_none() && node.skip_cert_verify.is_none() {
+        return;
+    }
+    let mut tls = json!({ "enabled": enabled || default_enable });
+    if let Some(sni) = node.sni.as_ref().filter(|s| !s.is_empty()) {
+        tls["server_name"] = json!(sni);
+    }
+    // REALITY
+    let use_reality = node.reality.unwrap_or(false) || node.reality_public_key.is_some();
+    if use_reality {
+        tls["enabled"] = json!(true);
+        let mut reality = json!({ "enabled": true });
+        if let Some(pbk) = node.reality_public_key.as_ref().filter(|s| !s.is_empty()) {
+            reality["public_key"] = json!(pbk);
+        }
+        if let Some(sid) = node.reality_short_id.as_ref().filter(|s| !s.is_empty()) {
+            reality["short_id"] = json!(sid);
+        }
+        tls["reality"] = reality;
+        // REALITY 场景下 utls fingerprint 几乎总是需要；缺省 chrome（与 Clash Party 一致）
+        let fp = node
+            .fingerprint
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .unwrap_or("chrome");
+        tls["utls"] = json!({ "enabled": true, "fingerprint": fp });
+    } else if let Some(fp) = node.fingerprint.as_ref().filter(|s| !s.is_empty()) {
+        tls["utls"] = json!({ "enabled": true, "fingerprint": fp });
+    }
+    // insecure / skip-cert-verify（非 REALITY 时有意义；REALITY 本身不校验站点证书）
+    if !use_reality {
+        if let Some(true) = node.skip_cert_verify {
+            tls["insecure"] = json!(true);
+        }
+    }
+    if let Some(alpn) = &node.alpn {
+        if !alpn.is_empty() {
+            tls["alpn"] = json!(alpn);
+        }
+    }
+    v["tls"] = tls;
 }
 
 /// 应用传输层（目前支持 ws），其余网络类型暂按默认处理。

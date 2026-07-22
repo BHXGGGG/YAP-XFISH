@@ -16,8 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use tray_icon::Icon;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::TrayIconBuilder;
-use tray_icon::TrayIconEvent;
+use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::Foundation::BOOL;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -40,6 +39,8 @@ pub enum AppCommand {
     UpdateAll,
     OpenWebUI,
     ToggleAutostart,
+    ToggleSystemProxy,
+    ToggleTun,
     Elevate,
     Quit,
 }
@@ -63,35 +64,60 @@ fn run_tray(
     cmd_tx: UnboundedSender<AppCommand>,
     thread_id: Arc<Mutex<Option<u32>>>,
 ) -> anyhow::Result<()> {
-    let icon = make_icon();
-
     // 初始状态：托盘线程不能 await，用 try_read 非阻塞取一次。
-    let (initial_running, initial_node, initial_autostart) = {
+    // current_node 存的是节点 id，托盘顶部要显示 name。
+    let (initial_running, initial_node_label, initial_autostart, initial_sysproxy, initial_tun) = {
         let st = state
             .status
             .try_read()
             .map(|g| (g.running, g.current_node.clone()))
             .unwrap_or((false, None));
-        let au = state.config.try_read().map(|g| g.autostart).unwrap_or(false);
-        (st.0, st.1, au)
+        let label = resolve_node_label(&state, st.1.as_ref());
+        let (au, sp, tun) = state
+            .config
+            .try_read()
+            .map(|g| (g.autostart, g.system_proxy, g.enable_tun))
+            .unwrap_or((false, false, false));
+        (st.0, label, au, sp, tun)
     };
 
-    let status_item = MenuItem::with_id("status", status_text(initial_running, &initial_node), false, None);
+    // 按系统代理 / TUN 状态叠角标（右上紫 / 左上黄）
+    let icon = make_icon(initial_sysproxy, initial_tun);
+
+    let status_item = MenuItem::with_id(
+        "status",
+        status_text(initial_running, &initial_node_label),
+        false,
+        None,
+    );
     let start_item = MenuItem::with_id("start", "启动代理", true, None);
     let stop_item = MenuItem::with_id("stop", "停止代理", true, None);
     let restart_item = MenuItem::with_id("restart", "重启代理", true, None);
     let update_item = MenuItem::with_id("update", "更新全部订阅", true, None);
-    let autostart_item = CheckMenuItem::with_id("autostart", "开机启动", initial_autostart, true, None);
+    // muda CheckMenuItem::with_id 参数顺序是 (id, text, enabled, checked, accel)。
+    // 之前误写成 (id, text, checked, enabled)，导致配置为 false 时菜单项被禁用、看起来勾着却点不动。
+    let sysproxy_item =
+        CheckMenuItem::with_id("sysproxy", "系统代理", true, initial_sysproxy, None);
+    let tun_item = CheckMenuItem::with_id("tun", "TUN 模式", true, initial_tun, None);
+    let autostart_item =
+        CheckMenuItem::with_id("autostart", "开机启动", true, initial_autostart, None);
     let elevated = crate::system::admin::is_elevated();
     let elevate_item = MenuItem::with_id(
         "elevate",
-        if elevated { "已以管理员身份运行" } else { "以管理员身份运行" },
+        if elevated {
+            "已以管理员身份运行"
+        } else {
+            "以管理员身份运行"
+        },
         !elevated,
         None,
     );
     let open_item = MenuItem::with_id("open", "打开管理面板", true, None);
     let quit_item = MenuItem::with_id("quit", "退出", true, None);
     let separator = PredefinedMenuItem::separator();
+    let separator2 = PredefinedMenuItem::separator();
+    let separator3 = PredefinedMenuItem::separator();
+    let separator4 = PredefinedMenuItem::separator();
 
     let menu = Menu::new();
     let _ = menu.append(&status_item);
@@ -100,17 +126,27 @@ fn run_tray(
     let _ = menu.append(&stop_item);
     let _ = menu.append(&restart_item);
     let _ = menu.append(&update_item);
-    let _ = menu.append(&separator);
+    let _ = menu.append(&separator2);
+    let _ = menu.append(&sysproxy_item);
+    let _ = menu.append(&tun_item);
     let _ = menu.append(&autostart_item);
     let _ = menu.append(&elevate_item);
+    let _ = menu.append(&separator3);
     let _ = menu.append(&open_item);
-    let _ = menu.append(&separator);
+    let _ = menu.append(&separator4);
     let _ = menu.append(&quit_item);
 
     let mut autostart_on = initial_autostart;
+    let mut sysproxy_on = initial_sysproxy;
+    let mut tun_on = initial_tun;
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
+        // 左键不要弹菜单：左键只用来打开管理面板；菜单留给右键。
+        // 否则会出现：左键点开菜单 → 再点桌面关闭菜单时，体验上像“误开了面板”
+        // （实际是 Left+Up 已触发 OpenWebUI，与菜单弹出叠在一起）。
+        .with_menu_on_left_click(false)
+        .with_menu_on_right_click(true)
         .with_tooltip(tooltip_text(initial_running))
         .with_icon(icon)
         .build()?;
@@ -166,6 +202,16 @@ fn run_tray(
                     autostart_item.set_checked(autostart_on);
                     let _ = cmd_tx.send(AppCommand::ToggleAutostart);
                 }
+                "sysproxy" => {
+                    sysproxy_on = !sysproxy_on;
+                    sysproxy_item.set_checked(sysproxy_on);
+                    let _ = cmd_tx.send(AppCommand::ToggleSystemProxy);
+                }
+                "tun" => {
+                    tun_on = !tun_on;
+                    tun_item.set_checked(tun_on);
+                    let _ = cmd_tx.send(AppCommand::ToggleTun);
+                }
                 "elevate" => {
                     let _ = cmd_tx.send(AppCommand::Elevate);
                 }
@@ -176,23 +222,72 @@ fn run_tray(
             }
         }
 
-        // 托盘图标点击（左键）→ 打开管理面板
+        // 托盘图标点击策略（对齐 Clash Verge / 常见代理客户端）：
+        // - 左键松开：打开管理面板（且 builder 已 with_menu_on_left_click(false)，
+        //   左键不会再弹菜单，避免“点图标出菜单 + 再点桌面关菜单却感觉误开面板”）。
+        // - 右键：只弹菜单（builder with_menu_on_right_click(true)），不打开面板。
+        // - Down / 中键 / DoubleClick / Enter / Move / Leave：忽略。
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click { .. } = ev {
-                let _ = cmd_tx.send(AppCommand::OpenWebUI);
+            match ev {
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => {
+                    let _ = cmd_tx.send(AppCommand::OpenWebUI);
+                }
+                _ => {}
             }
         }
 
-        // 状态变化 → 刷新 tooltip 与状态项文字
+        // 状态变化 → 刷新 tooltip 与状态项文字；配置变化 → 刷新勾选
         while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::Status {
-                running,
-                current_node,
-                ..
-            } = ev
-            {
-                status_item.set_text(status_text(running, &current_node));
-                let _ = tray.set_tooltip(Some(tooltip_text(running)));
+            match ev {
+                AppEvent::Status {
+                    running,
+                    current_node,
+                    ..
+                } => {
+                    // current_node 是 id，解析成 name 再显示
+                    let label = resolve_node_label(&state, current_node.as_ref());
+                    status_item.set_text(status_text(running, &label));
+                    let _ = tray.set_tooltip(Some(tooltip_text(running)));
+                }
+                AppEvent::Config {
+                    system_proxy,
+                    enable_tun,
+                } => {
+                    sysproxy_on = system_proxy;
+                    tun_on = enable_tun;
+                    sysproxy_item.set_checked(sysproxy_on);
+                    tun_item.set_checked(tun_on);
+                    // 系统代理 / TUN 状态点：右上紫点、左上黄点
+                    if let Err(e) = tray.set_icon(Some(make_icon(sysproxy_on, tun_on))) {
+                        eprintln!("[proxy] 刷新托盘图标失败: {e}");
+                    }
+                }
+                AppEvent::Profile { profile } => {
+                    // 选中节点变化时，Profile 也会推送；刷新顶部名称
+                    let label = profile
+                        .selected_node
+                        .as_ref()
+                        .and_then(|id| {
+                            profile
+                                .nodes
+                                .iter()
+                                .find(|n| &n.id == id)
+                                .map(|n| n.name.clone())
+                        })
+                        .or(profile.selected_node.clone());
+                    // 保留当前 running 态（Profile 事件不带 running）
+                    let running = state
+                        .status
+                        .try_read()
+                        .map(|g| g.running)
+                        .unwrap_or(false);
+                    status_item.set_text(status_text(running, &label));
+                }
+                _ => {}
             }
         }
     }
@@ -248,6 +343,81 @@ pub async fn command_loop(
                 };
                 let _ = crate::system::autostart::set_autostart(new_on);
             }
+            AppCommand::ToggleSystemProxy => {
+                let (new_on, port) = {
+                    let mut c = state.config.write().await;
+                    c.system_proxy = !c.system_proxy;
+                    let v = c.system_proxy;
+                    let port = c.proxy_port;
+                    let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
+                    (v, port)
+                };
+                let r = if new_on {
+                    crate::system::sysproxy::enable(port)
+                } else {
+                    crate::system::sysproxy::disable()
+                };
+                match r {
+                    Ok(_) => {
+                        let msg = if new_on {
+                            format!("托盘：已启用系统代理 → 127.0.0.1:{port}")
+                        } else {
+                            "托盘：已关闭系统代理".into()
+                        };
+                        state.log_with("config", "info", msg);
+                    }
+                    Err(e) => {
+                        // 回滚勾选
+                        let mut c = state.config.write().await;
+                        c.system_proxy = !new_on;
+                        let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
+                        state.log_with("config", "error", format!("托盘切换系统代理失败: {e}"));
+                    }
+                }
+                let cfg = state.config.read().await;
+                state.emit(AppEvent::Config {
+                    system_proxy: cfg.system_proxy,
+                    enable_tun: cfg.enable_tun,
+                });
+            }
+            AppCommand::ToggleTun => {
+                let new_on = {
+                    let mut c = state.config.write().await;
+                    c.enable_tun = !c.enable_tun;
+                    let v = c.enable_tun;
+                    let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
+                    v
+                };
+                if new_on && !crate::system::admin::is_elevated() {
+                    state.log(
+                        "warn",
+                        "托盘：已开启 TUN，但当前未以管理员身份运行，sing-box 可能无法创建虚拟网卡。",
+                    );
+                }
+                // TUN 变更需要重建核心配置
+                let (p, c) = (
+                    state.visible_profile().await,
+                    state.config.read().await.clone(),
+                );
+                if state.core.is_running().await {
+                    let _ = state.core.reload_safe(&p, &c).await;
+                } else {
+                    let _ = state.core.write_config_only(&p, &c).await;
+                }
+                state.log_with(
+                    "config",
+                    "info",
+                    if new_on {
+                        "托盘：已启用 TUN 模式"
+                    } else {
+                        "托盘：已关闭 TUN 模式"
+                    },
+                );
+                state.emit(AppEvent::Config {
+                    system_proxy: c.system_proxy,
+                    enable_tun: new_on,
+                });
+            }
             AppCommand::Elevate => {
                 if !crate::system::admin::is_elevated() {
                     if crate::system::admin::elevate_and_restart() {
@@ -260,6 +430,10 @@ pub async fn command_loop(
                 }
             }
             AppCommand::Quit => {
+                // 退出前关闭系统代理，避免用户系统仍指向本进程端口。
+                if state.config.read().await.system_proxy {
+                    let _ = crate::system::sysproxy::disable();
+                }
                 let _ = state.core.stop().await;
                 let tid = *thread_id.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(tid) = tid {
@@ -346,6 +520,17 @@ fn shell_open_url(url: &str) {
     }
 }
 
+/// 把 status 里的节点 id 解析成 profile 中的显示名；找不到则回退 id。
+fn resolve_node_label(state: &AppState, node_id: Option<&String>) -> Option<String> {
+    let id = node_id?;
+    if let Ok(p) = state.profile.try_read() {
+        if let Some(n) = p.nodes.iter().find(|n| &n.id == id) {
+            return Some(n.name.clone());
+        }
+    }
+    Some(id.clone())
+}
+
 fn status_text(running: bool, node: &Option<String>) -> String {
     if running {
         match node {
@@ -359,27 +544,60 @@ fn status_text(running: bool, node: &Option<String>) -> String {
 
 fn tooltip_text(running: bool) -> String {
     format!(
-        "proxy-rs — {}",
+        "YAP-XFISH — {}",
         if running { "代理运行中" } else { "代理已停止" }
     )
 }
 
-/// 生成一个 32x32 的青色圆点图标（透明背景），无需外部图片资源。
-fn make_icon() -> Icon {
-    let size = 32u32;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    let c = (size as f32) / 2.0;
-    let r = 13.0f32;
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - c;
-            let dy = y as f32 - c;
-            if (dx * dx + dy * dy).sqrt() <= r {
-                rgba.extend_from_slice(&[45u8, 212u8, 191u8, 255u8]);
-            } else {
-                rgba.extend_from_slice(&[0u8, 0u8, 0u8, 0u8]);
+/// 托盘图标：嵌入 X-FISH 像素图 32x32，并按状态叠角标。
+/// - 系统代理启用：右上角亮紫色圆点
+/// - TUN 启用：左上角亮黄色圆点
+fn make_icon(system_proxy: bool, enable_tun: bool) -> Icon {
+    const W: u32 = 32;
+    const H: u32 = 32;
+    let mut rgba = include_bytes!("../../assets/tray_32.rgba").to_vec();
+    debug_assert_eq!(rgba.len(), (W * H * 4) as usize);
+
+    // 亮紫 / 亮黄（高饱和，托盘小图上可辨）
+    const PURPLE: [u8; 4] = [192, 38, 211, 255]; // #c026d3
+    const YELLOW: [u8; 4] = [250, 204, 21, 255]; // #facc15
+    const RING: [u8; 4] = [255, 255, 255, 230]; // 细白描边，提高对比
+
+    if enable_tun {
+        // 左上角
+        paint_dot(&mut rgba, W, 5.0, 5.0, 4.2, YELLOW, RING);
+    }
+    if system_proxy {
+        // 右上角
+        paint_dot(&mut rgba, W, (W as f32) - 6.0, 5.0, 4.2, PURPLE, RING);
+    }
+
+    Icon::from_rgba(rgba, W, H).expect("生成托盘图标失败")
+}
+
+/// 在 32x32 RGBA 上画一个带描边的实心圆点（中心 cx,cy，半径 r）。
+fn paint_dot(rgba: &mut [u8], width: u32, cx: f32, cy: f32, r: f32, fill: [u8; 4], ring: [u8; 4]) {
+    let r_outer = r + 1.1;
+    let r2 = r * r;
+    let r_outer2 = r_outer * r_outer;
+    let min_x = ((cx - r_outer).floor() as i32).max(0) as u32;
+    let max_x = ((cx + r_outer).ceil() as i32).min(width as i32 - 1) as u32;
+    let min_y = ((cy - r_outer).floor() as i32).max(0) as u32;
+    let max_y = ((cy + r_outer).ceil() as i32).min(width as i32 - 1) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let d2 = dx * dx + dy * dy;
+            if d2 > r_outer2 {
+                continue;
             }
+            let i = ((y * width + x) * 4) as usize;
+            let color = if d2 <= r2 { fill } else { ring };
+            rgba[i] = color[0];
+            rgba[i + 1] = color[1];
+            rgba[i + 2] = color[2];
+            rgba[i + 3] = color[3];
         }
     }
-    Icon::from_rgba(rgba, size, size).expect("生成托盘图标失败")
 }

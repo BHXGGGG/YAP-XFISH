@@ -19,6 +19,18 @@ export function connectWs() {
         store.status.running = ev.running
         store.status.mode = ev.mode
         store.status.current_node = ev.current_node
+        // name 由 /api/status 提供；WS 事件里可能没有，下面靠 profile 补
+        if (ev.current_node) {
+          const n = store.profile.nodes.find((x: any) => x.id === ev.current_node)
+          store.status.current_node_name = n?.name || null
+        } else {
+          store.status.current_node_name = null
+        }
+      } else if (ev.type === 'config') {
+        store.config.system_proxy = !!ev.system_proxy
+        store.config.enable_tun = !!ev.enable_tun
+        store.status.system_proxy = !!ev.system_proxy
+        store.status.enable_tun = !!ev.enable_tun
       } else if (ev.type === 'traffic') {
         store.status.traffic_up = ev.up
         store.status.traffic_down = ev.down

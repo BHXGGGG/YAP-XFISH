@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, FALSE, GetLastError, HANDLE};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 
-const MUTEX_NAME: &str = "ProxyRs_SingleInstance_Mutex";
+const MUTEX_NAME: &str = "YapXfish_SingleInstance_Mutex";
 
 /// 首个实例持有的互斥锁句柄。进程退出前独占，防止第二个实例启动。
 /// 用 Mutex<Option<HANDLE>> 而非 OnceLock，便于提权重启时临时让出并重新占用。

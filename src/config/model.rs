@@ -52,6 +52,22 @@ pub struct Node {
     pub alpn: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws: Option<WsOptions>,
+    /// TLS 客户端指纹（utls）：chrome / firefox / safari / ios / android / edge / 360 / qq / random
+    /// Clash: `client-fingerprint`；v2rayN: `fp=`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// REALITY public key（Clash: reality-opts.public-key；v2rayN: pbk=）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reality_public_key: Option<String>,
+    /// REALITY short id（Clash: reality-opts.short-id；v2rayN: sid=）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reality_short_id: Option<String>,
+    /// 是否启用 REALITY（Clash 有 reality-opts / security=reality 时为 true）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reality: Option<bool>,
+    /// skip-cert-verify / insecure（伪装 SNI 时常需要）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_cert_verify: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<serde_json::Value>,
     // 运行时字段

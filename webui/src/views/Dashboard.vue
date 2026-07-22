@@ -53,6 +53,16 @@ const counts = computed(() => {
   }
   return c
 })
+
+// 仪表盘「当前节点」优先显示节点列表里的 name，与节点页一致；
+// 后端 status.current_node 是 id，status.current_node_name 是 name（新字段）。
+const currentNodeLabel = computed(() => {
+  const id = store.status.current_node || store.profile.selected_node
+  if (!id) return '—'
+  if (store.status.current_node_name) return store.status.current_node_name
+  const n = store.profile.nodes.find((x: any) => x.id === id)
+  return n?.name || id
+})
 </script>
 
 <template>
@@ -66,7 +76,7 @@ const counts = computed(() => {
         </div>
       </div>
       <div class="card"><div class="k">模式</div><div class="v">{{ store.status.mode }}</div></div>
-      <div class="card"><div class="k">当前节点</div><div class="v">{{ store.status.current_node || '—' }}</div></div>
+      <div class="card"><div class="k">当前节点</div><div class="v node-name">{{ currentNodeLabel }}</div></div>
       <div class="card"><div class="k">节点数</div><div class="v">{{ store.status.node_count }}</div></div>
       <div class="card"><div class="k">上行</div><div class="v">{{ (store.status.traffic_up / 1024 / 1024).toFixed(2) }} MB</div></div>
       <div class="card"><div class="k">下行</div><div class="v">{{ (store.status.traffic_down / 1024 / 1024).toFixed(2) }} MB</div></div>
@@ -121,6 +131,13 @@ const counts = computed(() => {
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .k { font-size: 12px; color: #6b7280; }
 .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
+.v.node-name {
+  font-size: 14px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
 .badge.on { background: #dcfce7; color: #166534; }
 .badge.off { background: #fee2e2; color: #991b1b; }

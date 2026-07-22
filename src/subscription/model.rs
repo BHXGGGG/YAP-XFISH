@@ -20,7 +20,8 @@ pub enum UpdateInterval {
 
 impl Default for UpdateInterval {
     fn default() -> Self {
-        UpdateInterval::Manual
+        // 默认每 6 小时自动更新订阅
+        UpdateInterval::Every6Hours
     }
 }
 

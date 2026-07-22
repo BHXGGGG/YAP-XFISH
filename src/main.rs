@@ -21,6 +21,10 @@ use tokio::sync::mpsc::unbounded_channel;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 必须在创建托盘/菜单/窗口之前启用 DPI 感知，否则高分屏下系统会
+    // 对原生 HMENU 做位图拉伸，托盘右键菜单中文字体会发糊。
+    system::dpi::enable();
+
     // 单实例：已有实例在运行则直接退出（不抢占端口、不重复后台）。
     if !system::single_instance::ensure_single_instance() {
         eprintln!("[proxy] 已有实例在运行，本进程退出。");
@@ -63,6 +67,37 @@ async fn main() -> Result<()> {
         thread_id.clone(),
     ));
 
+    // 程序启动后默认启动本地代理（sing-box 核心）。
+    // 失败不阻断 WebUI / 托盘：用户仍可在面板里手动重试。
+    if let Err(e) = auto_start_local_proxy(&state).await {
+        eprintln!("[proxy] 启动时自动启动本地代理失败: {e}");
+        state.log_with("core", "error", format!("启动时自动启动本地代理失败: {e}"));
+    }
+
+    // 若配置要求系统代理，则在核心起来后同步 WinINET。
+    {
+        let cfg = state.config.read().await;
+        if cfg.system_proxy {
+            match crate::system::sysproxy::enable(cfg.proxy_port) {
+                Ok(_) => {
+                    println!(
+                        "[proxy] 系统代理已启用 → 127.0.0.1:{}",
+                        cfg.proxy_port
+                    );
+                    state.log_with(
+                        "config",
+                        "info",
+                        format!("启动时启用系统代理 → 127.0.0.1:{}", cfg.proxy_port),
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[proxy] 启动时启用系统代理失败: {e}");
+                    state.log_with("config", "error", format!("启动时启用系统代理失败: {e}"));
+                }
+            }
+        }
+    }
+
     // 运行 HTTP 服务（浏览器/托盘关闭不影响后台）。ctrl_c 退出。
     tokio::select! {
         r = server::run(state) => {
@@ -74,5 +109,41 @@ async fn main() -> Result<()> {
             println!("[proxy] 收到退出信号，停止后台…");
         }
     }
+    Ok(())
+}
+
+/// 程序启动时默认拉起 sing-box 本地代理。
+/// 逻辑与 `/api/core/start` 对齐：用 visible_profile 渲染配置并更新 RuntimeStatus。
+async fn auto_start_local_proxy(state: &Arc<AppState>) -> Result<()> {
+    let p = state.visible_profile().await;
+    let cfg = state.config.read().await.clone();
+    let node_name = p
+        .selected_node
+        .as_ref()
+        .and_then(|id| p.nodes.iter().find(|n| &n.id == id).map(|n| n.name.clone()));
+    state.log_with(
+        "core",
+        "info",
+        format!(
+            "启动时自动启动本地代理: 模式={:?} 节点={} 节点数={}",
+            p.mode,
+            node_name.as_deref().unwrap_or("无"),
+            p.nodes.len()
+        ),
+    );
+    state.core.start(&p, &cfg).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    {
+        let mut st = state.status.write().await;
+        st.running = true;
+        st.mode = p.mode;
+        st.current_node = p.selected_node.clone();
+    }
+    state.emit(app::AppEvent::Status {
+        running: true,
+        mode: p.mode,
+        current_node: p.selected_node.clone(),
+    });
+    state.log_with("core", "info", "本地代理已随程序启动");
+    println!("[proxy] 本地代理已启动");
     Ok(())
 }

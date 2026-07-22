@@ -1068,28 +1068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxy-rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "bytes",
- "chrono",
- "cron",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
- "tokio",
- "tray-icon",
- "windows-sys 0.52.0",
- "winreg",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,6 +1681,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2153,10 +2140,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "winres"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b68db261ef59e9e52806f688020631e987592bd83619edccda9c47d42cde4f6c"
+dependencies = [
+ "toml",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "yap-xfish"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "cron",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio",
+ "tray-icon",
+ "windows-sys 0.52.0",
+ "winreg",
+ "winres",
+]
 
 [[package]]
 name = "yoke"

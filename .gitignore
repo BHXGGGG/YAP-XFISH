@@ -15,7 +15,7 @@ Cargo.lock.bak
 
 # ===== 运行时数据（sing-box 写入的数据目录；按 main.rs 的 data_dir 推断） =====
 /data/
-/release/proxy-rs-v0.1.0-windows-amd64/data/
+/release/**/data/
 # 任何位置冒出来的 data 目录都别入库（程序运行时写入的订阅/配置/日志）
 data/
 
@@ -64,5 +64,7 @@ proxy_rs.pdb
 # sing-box 是第三方内核二进制（约 40MB+），不入库；用时放到 exe 同目录即可
 /release/sing-box.exe
 /release/**/sing-box.exe
-# 发布包里的自研 exe 体积小，默认保留便于本地冒烟
-# /release/proxy-rs.exe
+# 发布 zip / 本地 exe 不入库（发布走 GitHub Releases 附件）
+/release/*.zip
+/release/*.exe
+/release/**/*.exe
