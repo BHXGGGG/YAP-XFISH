@@ -1,4 +1,6 @@
 # YAP-XFISH 轻量 · 便携 ·原生 Rust · 无 Electron的 Sing-box 图形客户端
+<img width="208" height="99" alt="图_20260722_204517_430" src="https://github.com/user-attachments/assets/8701b842-eeb4-4807-9308-aeb64a69a6d0" />
+
 
 
 Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面板 + 系统托盘。  
