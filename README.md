@@ -231,7 +231,7 @@ cargo build --release
 
 ## 许可证
 
-MIT（见 `Cargo.toml` 中 `license` 字段）。  
+本项目采用 [MIT License](./LICENSE)（与 `Cargo.toml` 中 `license = "MIT"` 一致）。  
 `sing-box` 及其规则集遵循各自上游许可证。
 
 ---
