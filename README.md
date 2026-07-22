@@ -241,7 +241,7 @@ cargo build --release
 - [sing-box](https://github.com/SagerNet/sing-box)  
 - [UIforFreedom/UIF](https://github.com/UIforFreedom/UIF)（测速思路参考）  
 - Clash / mihomo 生态订阅与延迟 API 约定  
-
+- LINUX DO — 新的理想型社区 https://linux.do/
 ---
 
 ## 开发者自测（可选）
