@@ -25,7 +25,6 @@ function protocolMeta(kind: string) {
   return PROTOCOL_META[kind] || { label: kind || '?', color: '#64748b' }
 }
 
-// 仅显示「启用订阅 + 手动节点」
 const visibleNodes = computed(() => {
   const enabled = new Set(
     store.subscriptions.filter((s: any) => s.enabled).map((s: any) => s.id)
@@ -77,32 +76,23 @@ async function testOne(id: string, ev?: Event) {
 
 const emit = defineEmits<{ (e: 'navigate', tab: string): void }>()
 
-// 日志
-const SOURCE_COLOR: Record<string, string> = {
-  core: '#3b82f6', sub: '#22c55e', http: '#6b7280', config: '#a855f7',
-  latency: '#f59e0b', net: '#06b6d4', app: '#9ca3af',
-}
-const filteredLogs = computed(() =>
-  store.logFilter === 'all' ? store.logs : store.logs.filter((l: any) => l.level === store.logFilter)
-)
-function fmtTime(ts: number) {
-  const d = new Date(ts)
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
-}
-async function start() { try { await api.coreStart() } catch (e: any) { toast(e.message) } }
-async function stop()  { try { await api.coreStop()  } catch (e: any) { toast(e.message) } }
-async function restart(){ try { await api.coreRestart() } catch (e: any) { toast(e.message) } }
-function clearLogs() { store.logs.splice(0, store.logs.length) }
-function setFilter(f: 'all' | 'info' | 'warn' | 'error') { store.logFilter = f }
-const counts = computed(() => {
-  const c = { info: 0, warn: 0, error: 0 }
-  for (const l of store.logs) {
-    if (l.level === 'info' || l.level === 'warn' || l.level === 'error') {
-      c[l.level as 'info' | 'warn' | 'error']++
-    }
-  }
-  return c
+// 启动/停止/重启
+async function start()   { try { await api.coreStart()   } catch (e: any) { toast(e.message) } }
+async function stop()    { try { await api.coreStop()    } catch (e: any) { toast(e.message) } }
+async function restart() { try { await api.coreRestart() } catch (e: any) { toast(e.message) } }
+
+// 「代理状态」合并：基础运行状态 + 系统代理 / TUN 开关标记
+const sysproxyOn = computed(() => !!(store.config.system_proxy || store.status.system_proxy))
+const tunOn      = computed(() => !!(store.config.enable_tun || store.status.enable_tun))
+const statusLabel = computed(() => {
+  const parts: string[] = []
+  parts.push(store.status.running ? '运行中' : '已停止')
+  if (sysproxyOn.value) parts.push('系统代理')
+  if (tunOn.value)      parts.push('TUN')
+  return parts.join(' · ')
 })
+const statusKind = computed(() => (store.status.running ? 'on' : 'off'))
+
 const currentNodeLabel = computed(() => {
   const id = store.status.current_node || store.profile.selected_node
   if (!id) return '—'
@@ -117,15 +107,27 @@ const currentNodeLabel = computed(() => {
     <h2>仪表盘</h2>
 
     <div class="cards">
-      <div class="card">
+      <!-- 代理状态：合并 基础运行状态 + 系统代理 + TUN -->
+      <div class="card status-card">
         <div class="k">代理状态</div>
         <div class="v">
-          <span class="badge" :class="store.status.running ? 'on' : 'off'">
-            {{ store.status.running ? '运行中' : '已停止' }}
-          </span>
+          <span class="badge" :class="statusKind">{{ statusLabel }}</span>
         </div>
       </div>
-      <div class="card"><div class="k">模式</div><div class="v">{{ store.status.mode }}</div></div>
+
+      <!-- 模式：可选择 -->
+      <div class="card mode-card">
+        <div class="k">模式</div>
+        <div class="v mode-row">
+          <button v-for="[k, l] in modes" :key="k"
+                  class="mode-btn"
+                  :class="{ active: store.profile.mode === k }"
+                  @click="setMode(k)">
+            {{ l }}
+          </button>
+        </div>
+      </div>
+
       <div class="card"><div class="k">当前节点</div><div class="v node-name">{{ currentNodeLabel }}</div></div>
       <div class="card"><div class="k">节点数</div><div class="v">{{ store.status.node_count }}</div></div>
       <div class="card"><div class="k">上行</div><div class="v">{{ (store.status.traffic_up / 1024 / 1024).toFixed(2) }} MB</div></div>
@@ -138,14 +140,10 @@ const currentNodeLabel = computed(() => {
       <button @click="restart">重启</button>
     </div>
 
-    <!-- 节点区：把原「节点页」直接挪到首页 -->
+    <!-- 节点区 -->
     <div class="section-head">
       <h3 style="margin:0">节点</h3>
       <div class="row-inline">
-        <span class="muted">模式：</span>
-        <button v-for="[k, l] in modes" :key="k"
-                :class="{ active: store.profile.mode === k }"
-                @click="setMode(k)">{{ l }}</button>
         <button :class="{ active: sortByLatency }"
                 @click="sortByLatency = !sortByLatency">按延迟排序</button>
         <button class="primary" @click="testAll">测试全部延迟</button>
@@ -195,43 +193,28 @@ const currentNodeLabel = computed(() => {
       </div>
     </div>
 
-    <!-- 日志 -->
-    <div class="log-head">
-      <h3 style="margin:0">实时日志</h3>
-      <div class="log-filters">
-        <button :class="{ active: store.logFilter === 'all' }" @click="setFilter('all')">
-          全部 <span class="badge-mini">{{ store.logs.length }}</span>
-        </button>
-        <button :class="{ active: store.logFilter === 'info' }" @click="setFilter('info')">
-          info <span class="badge-mini">{{ counts.info }}</span>
-        </button>
-        <button :class="{ active: store.logFilter === 'warn' }" @click="setFilter('warn')">
-          warn <span class="badge-mini warn">{{ counts.warn }}</span>
-        </button>
-        <button :class="{ active: store.logFilter === 'error' }" @click="setFilter('error')">
-          error <span class="badge-mini error">{{ counts.error }}</span>
-        </button>
-        <button class="clear" @click="clearLogs" title="清空当前日志（不影响后端）">清空</button>
-      </div>
-    </div>
-
-    <div v-if="!filteredLogs.length" class="log-empty">暂无日志</div>
-    <div v-else class="log">
-      <div v-for="(l, i) in filteredLogs" :key="i"
-           class="log-row" :class="['lv-' + (l.level || 'info'), 'src-' + (l.source || 'app')]">
-        <span class="ts">{{ fmtTime(l.ts) }}</span>
-        <span class="src" :style="{ background: SOURCE_COLOR[l.source] || SOURCE_COLOR.app }">
-          {{ l.source || 'app' }}
-        </span>
-        <span class="lvl">{{ l.level || 'info' }}</span>
-        <span class="msg">{{ l.message }}</span>
-      </div>
+    <!-- 日志已迁至「设置」页面 -->
+    <div class="log-hint">
+      💡 实时日志请前往 <a href="#" @click.prevent="emit('navigate', 'settings')">设置</a> 页查看。
     </div>
   </section>
 </template>
 
 <style scoped>
-.cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+/* 让「代理状态」与「模式」两卡略宽，避免文字拥挤 */
+.cards > .status-card { grid-column: span 2; }
+.cards > .mode-card   { grid-column: span 2; }
+@media (max-width: 1280px) {
+  .cards { grid-template-columns: repeat(3, 1fr); }
+  .cards > .status-card, .cards > .mode-card { grid-column: span 1; }
+}
+
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .k { font-size: 12px; color: #6b7280; }
 .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
@@ -239,19 +222,26 @@ const currentNodeLabel = computed(() => {
   font-size: 14px; line-height: 1.35;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
 .badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
 .badge.on  { background: #dcfce7; color: #166534; }
 .badge.off { background: #fee2e2; color: #991b1b; }
 
+.mode-row { display: flex; flex-wrap: wrap; gap: 6px; font-size: 14px; }
+.mode-btn {
+  padding: 3px 10px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff; cursor: pointer;
+}
+.mode-btn:hover  { background: #eff6ff; border-color: #93c5fd; }
+.mode-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
 .actions { display: flex; gap: 8px; margin: 12px 0 18px; }
 
-/* 节点区 */
 .section-head {
   display: flex; align-items: center; justify-content: space-between;
   margin: 8px 0 8px; gap: 8px; flex-wrap: wrap;
 }
 .row-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.muted { color: #6b7280; font-size: 13px; }
 .row-inline button { padding: 4px 10px; font-size: 12px; }
 .row-inline button.active { background: var(--primary); color: #fff; }
 .empty {
@@ -310,38 +300,15 @@ const currentNodeLabel = computed(() => {
 .meta-untested { color: #9ca3af; }
 .meta-testing  { color: #2563eb; }
 
-/* 日志 */
-.log-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 6px; }
-.log-filters { display: flex; gap: 6px; align-items: center; }
-.log-filters button { padding: 3px 10px; font-size: 12px; }
-.log-filters button.active { background: var(--primary); color: #fff; }
-.log-filters button.clear { color: #b91c1c; }
-.badge-mini {
-  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px;
-  background: #e5e7eb; color: #374151; border-radius: 9px;
-  font-size: 11px; text-align: center; vertical-align: middle;
+.log-hint {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: #4b5563;
 }
-.badge-mini.warn  { background: #fef3c7; color: #92400e; }
-.badge-mini.error { background: #fee2e2; color: #991b1b; }
-.log-empty { padding: 16px; color: #9ca3af; text-align: center; background: var(--panel); border-radius: var(--radius); }
-.log {
-  max-height: 540px; overflow-y: auto;
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.log-row {
-  display: grid; grid-template-columns: 76px 56px 50px 1fr; gap: 8px;
-  padding: 3px 10px; border-bottom: 1px solid #f3f4f6; align-items: baseline;
-}
-.log-row:hover { background: #f9fafb; }
-.ts { color: #9ca3af; }
-.src { color: #fff; text-align: center; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: .3px; padding: 1px 0; }
-.lvl { font-weight: 700; }
-.msg { white-space: pre-wrap; word-break: break-all; }
-.lv-info  .lvl { color: #2563eb; }
-.lv-warn  { background: #fffbeb; }
-.lv-warn  .lvl { color: #d97706; }
-.lv-error { background: #fef2f2; }
-.lv-error .lvl { color: #dc2626; }
+.log-hint a { color: var(--primary); text-decoration: none; }
+.log-hint a:hover { text-decoration: underline; }
 </style>

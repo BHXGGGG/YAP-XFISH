@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
 
@@ -18,7 +18,6 @@ async function elevate() {
   elevating.value = true
   try {
     await api.adminElevate()
-    // 提权成功时后台会以管理员身份重启并重新接管；本页将断开重连。
     toast('正在以管理员身份重新启动…')
   } catch (e: any) { toast(e.message) }
   finally { elevating.value = false }
@@ -28,11 +27,51 @@ const mem = ref<{ working_set_mb: number } | null>(null)
 async function refreshMem() {
   try { mem.value = await api.memDebug() } catch (e: any) { toast(e.message) }
 }
+
+/* ---------- 实时日志（原仪表盘） ---------- */
+const SOURCE_COLOR: Record<string, string> = {
+  core:    '#3b82f6',
+  sub:     '#22c55e',
+  http:    '#6b7280',
+  config:  '#a855f7',
+  latency: '#f59e0b',
+  net:     '#06b6d4',
+  app:     '#9ca3af',
+}
+const filteredLogs = computed(() =>
+  store.logFilter === 'all'
+    ? store.logs
+    : store.logs.filter((l: any) => l.level === store.logFilter)
+)
+function fmtTime(ts: number) {
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
+}
+function setFilter(f: 'all' | 'info' | 'warn' | 'error') { store.logFilter = f }
+function clearLogs() { store.logs.splice(0, store.logs.length) }
+const counts = computed(() => {
+  const c = { info: 0, warn: 0, error: 0 }
+  for (const l of store.logs) {
+    if (l.level === 'info' || l.level === 'warn' || l.level === 'error') {
+      c[l.level as 'info' | 'warn' | 'error']++
+    }
+  }
+  return c
+})
+const autoscroll = ref(true)
+const logEl = ref<HTMLElement | null>(null)
+watch(filteredLogs, () => {
+  if (!autoscroll.value) return
+  queueMicrotask(() => {
+    if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
+  })
+})
 </script>
 
 <template>
   <section>
     <h2>设置</h2>
+
     <div class="form2">
       <label>Web 端口<input v-model.number="form.web_port" type="number" /></label>
       <label>Clash API 端口<input v-model.number="form.clash_api_port" type="number" /></label>
@@ -74,5 +113,78 @@ async function refreshMem() {
         <span v-if="mem"> 工作集：{{ mem.working_set_mb.toFixed(1) }} MB</span>
       </label>
     </div>
+
+    <!-- 实时日志：从仪表盘迁到这里 -->
+    <h3 style="margin-top:24px">实时日志</h3>
+    <div class="log-filters">
+      <button :class="{ active: store.logFilter === 'all' }" @click="setFilter('all')">
+        全部 <span class="badge-mini">{{ store.logs.length }}</span>
+      </button>
+      <button :class="{ active: store.logFilter === 'info' }" @click="setFilter('info')">
+        info <span class="badge-mini">{{ counts.info }}</span>
+      </button>
+      <button :class="{ active: store.logFilter === 'warn' }" @click="setFilter('warn')">
+        warn <span class="badge-mini warn">{{ counts.warn }}</span>
+      </button>
+      <button :class="{ active: store.logFilter === 'error' }" @click="setFilter('error')">
+        error <span class="badge-mini error">{{ counts.error }}</span>
+      </button>
+      <button :class="{ active: autoscroll }" @click="autoscroll = !autoscroll" title="自动滚到最新一行">
+        自动滚动
+      </button>
+      <button class="clear" @click="clearLogs" title="清空当前日志（不影响后端）">清空</button>
+    </div>
+
+    <div v-if="!filteredLogs.length" class="log-empty">暂无日志</div>
+    <div v-else class="log" ref="logEl">
+      <div v-for="(l, i) in filteredLogs" :key="i"
+           class="log-row" :class="['lv-' + (l.level || 'info'), 'src-' + (l.source || 'app')]">
+        <span class="ts">{{ fmtTime(l.ts) }}</span>
+        <span class="src" :style="{ background: SOURCE_COLOR[l.source] || SOURCE_COLOR.app }">
+          {{ l.source || 'app' }}
+        </span>
+        <span class="lvl">{{ l.level || 'info' }}</span>
+        <span class="msg">{{ l.message }}</span>
+      </div>
+    </div>
   </section>
 </template>
+
+<style scoped>
+/* 复用仪表盘日志样式，集中到这里 */
+.log-filters { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.log-filters button { padding: 3px 10px; font-size: 12px; }
+.log-filters button.active { background: var(--primary); color: #fff; }
+.log-filters button.clear  { color: #b91c1c; }
+.badge-mini {
+  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px;
+  background: #e5e7eb; color: #374151; border-radius: 9px;
+  font-size: 11px; text-align: center; vertical-align: middle;
+}
+.badge-mini.warn  { background: #fef3c7; color: #92400e; }
+.badge-mini.error { background: #fee2e2; color: #991b1b; }
+.log-empty {
+  padding: 16px; color: #9ca3af; text-align: center;
+  background: var(--panel); border-radius: var(--radius);
+}
+.log {
+  max-height: 480px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.log-row {
+  display: grid; grid-template-columns: 76px 56px 50px 1fr; gap: 8px;
+  padding: 3px 10px; border-bottom: 1px solid #f3f4f6; align-items: baseline;
+}
+.log-row:hover { background: #f9fafb; }
+.ts { color: #9ca3af; }
+.src { color: #fff; text-align: center; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: .3px; padding: 1px 0; }
+.lvl { font-weight: 700; }
+.msg { white-space: pre-wrap; word-break: break-all; }
+.lv-info  .lvl { color: #2563eb; }
+.lv-warn  { background: #fffbeb; }
+.lv-warn  .lvl { color: #d97706; }
+.lv-error { background: #fef2f2; }
+.lv-error .lvl { color: #dc2626; }
+</style>
