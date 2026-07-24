@@ -3,7 +3,7 @@ import os, zipfile, datetime
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REL = os.path.join(ROOT, "release")
 FILES = ["yap-xfish.exe", "sing-box.exe", "README.txt"]
-ZIP = os.path.join(REL, "yap-xfish-v0.1.0-windows-amd64.zip")
+ZIP = os.path.join(REL, "yap-xfish-v0.1.1-windows-amd64.zip")
 
 # 校验源码已是最新：exe 时间应晚于源码
 src_mtime = max(os.path.getmtime(os.path.join(ROOT, "src", f))
