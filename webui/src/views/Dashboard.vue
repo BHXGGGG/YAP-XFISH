@@ -35,9 +35,23 @@ const visibleNodes = computed(() => {
 })
 
 const sortByLatency = ref(false)
+const query = ref('')
+
+function norm(s: string) {
+  return (s || '').toString().toLowerCase()
+}
+
 const displayedNodes = computed(() => {
-  if (!sortByLatency.value) return visibleNodes.value
-  return [...visibleNodes.value].sort((a: any, b: any) => {
+  const base = visibleNodes.value
+  const q = norm(query.value).trim()
+  const filtered = q
+    ? base.filter((n: any) => {
+        const hay = norm(n.name) + '|' + norm(n.server) + '|' + norm(n.type)
+        return hay.includes(q)
+      })
+    : base
+  if (!sortByLatency.value) return filtered
+  return [...filtered].sort((a: any, b: any) => {
     const rank = (n: any) =>
       n.latency_status === 'ok' ? 0 : n.latency_status === 'timeout' ? 1 : 2
     const ra = rank(a), rb = rank(b)
@@ -76,12 +90,10 @@ async function testOne(id: string, ev?: Event) {
 
 const emit = defineEmits<{ (e: 'navigate', tab: string): void }>()
 
-// 启动/停止/重启
 async function start()   { try { await api.coreStart()   } catch (e: any) { toast(e.message) } }
 async function stop()    { try { await api.coreStop()    } catch (e: any) { toast(e.message) } }
 async function restart() { try { await api.coreRestart() } catch (e: any) { toast(e.message) } }
 
-// 「代理状态」合并：基础运行状态 + 系统代理 / TUN 开关标记
 const sysproxyOn = computed(() => !!(store.config.system_proxy || store.status.system_proxy))
 const tunOn      = computed(() => !!(store.config.enable_tun || store.status.enable_tun))
 const statusLabel = computed(() => {
@@ -107,27 +119,21 @@ const currentNodeLabel = computed(() => {
     <h2>仪表盘</h2>
 
     <div class="cards">
-      <!-- 代理状态：合并 基础运行状态 + 系统代理 + TUN -->
       <div class="card status-card">
         <div class="k">代理状态</div>
         <div class="v">
           <span class="badge" :class="statusKind">{{ statusLabel }}</span>
         </div>
       </div>
-
-      <!-- 模式：可选择 -->
       <div class="card mode-card">
         <div class="k">模式</div>
         <div class="v mode-row">
           <button v-for="[k, l] in modes" :key="k"
                   class="mode-btn"
                   :class="{ active: store.profile.mode === k }"
-                  @click="setMode(k)">
-            {{ l }}
-          </button>
+                  @click="setMode(k)">{{ l }}</button>
         </div>
       </div>
-
       <div class="card"><div class="k">当前节点</div><div class="v node-name">{{ currentNodeLabel }}</div></div>
       <div class="card"><div class="k">节点数</div><div class="v">{{ store.status.node_count }}</div></div>
       <div class="card"><div class="k">上行</div><div class="v">{{ (store.status.traffic_up / 1024 / 1024).toFixed(2) }} MB</div></div>
@@ -140,9 +146,16 @@ const currentNodeLabel = computed(() => {
       <button @click="restart">重启</button>
     </div>
 
-    <!-- 节点区 -->
+    <!-- 节点区：标题 + 搜索框 + 两按钮 同一行 -->
     <div class="section-head">
       <h3 style="margin:0">节点</h3>
+      <input
+        v-model="query"
+        class="node-search"
+        type="text"
+        placeholder="搜索节点（名称 / 服务器 / 协议）"
+        aria-label="搜索节点"
+      />
       <div class="row-inline">
         <button :class="{ active: sortByLatency }"
                 @click="sortByLatency = !sortByLatency">按延迟排序</button>
@@ -152,6 +165,9 @@ const currentNodeLabel = computed(() => {
 
     <div v-if="!visibleNodes.length" class="empty">
       暂无节点。请在「订阅」中添加订阅，或后续手动导入。
+    </div>
+    <div v-else-if="!displayedNodes.length" class="empty">
+      没有匹配的节点：<b>{{ query }}</b>
     </div>
 
     <div class="nodes-grid">
@@ -193,7 +209,6 @@ const currentNodeLabel = computed(() => {
       </div>
     </div>
 
-    <!-- 日志已迁至「设置」页面 -->
     <div class="log-hint">
       💡 实时日志请前往 <a href="#" @click.prevent="emit('navigate', 'settings')">设置</a> 页查看。
     </div>
@@ -201,13 +216,7 @@ const currentNodeLabel = computed(() => {
 </template>
 
 <style scoped>
-.cards {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
-}
-/* 让「代理状态」与「模式」两卡略宽，避免文字拥挤 */
+.cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
 .cards > .status-card { grid-column: span 2; }
 .cards > .mode-card   { grid-column: span 2; }
 @media (max-width: 1280px) {
@@ -218,10 +227,7 @@ const currentNodeLabel = computed(() => {
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .k { font-size: 12px; color: #6b7280; }
 .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
-.v.node-name {
-  font-size: 14px; line-height: 1.35;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.v.node-name { font-size: 14px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
 .badge.on  { background: #dcfce7; color: #166534; }
@@ -238,12 +244,28 @@ const currentNodeLabel = computed(() => {
 .actions { display: flex; gap: 8px; margin: 12px 0 18px; }
 
 .section-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
   margin: 8px 0 8px; gap: 8px; flex-wrap: wrap;
+}
+.node-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  max-width: 360px;
+  padding: 4px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+.node-search:focus {
+  outline: none;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.35);
 }
 .row-inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .row-inline button { padding: 4px 10px; font-size: 12px; }
 .row-inline button.active { background: var(--primary); color: #fff; }
+
 .empty {
   padding: 16px; color: #9ca3af; text-align: center;
   background: var(--panel); border-radius: var(--radius); border: 1px dashed var(--border);
@@ -268,10 +290,7 @@ const currentNodeLabel = computed(() => {
   font-size: 13px; font-weight: 600; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
 }
-.card-server {
-  font-size: 11px; color: #6b7280; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
-}
+.card-server { font-size: 11px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-latency { font-size: 12px; min-height: 18px; }
 
 .icon-btn {
