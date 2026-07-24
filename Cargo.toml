@@ -1,6 +1,6 @@
 [package]
 name = "yap-xfish"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 default-run = "yap-xfish"
 description = "YAP-XFISH — Windows Sing-box 代理客户端（WebUI + 托盘）"

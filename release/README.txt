@@ -1,4 +1,4 @@
-YAP-XFISH v0.1.0 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.1.1 —— Windows Sing-box 代理客户端（自包含分发）
 
 【使用】
 1. 把本 zip 解压到任意目录（例如 D:\YAP-XFISH）。
@@ -43,5 +43,5 @@ YAP-XFISH v0.1.0 —— Windows Sing-box 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.1.0
+- YAP-XFISH v0.1.1
 - sing-box（请使用官方 windows/amd64 发布包，与 yap-xfish.exe 同目录）
