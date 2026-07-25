@@ -30,7 +30,11 @@ pub fn load_profile(data_dir: &Path) -> AppResult<AppProfile> {
     let path = data_dir.join(PROFILE_FILE);
     if path.exists() {
         let s = std::fs::read_to_string(&path)?;
-        let p: AppProfile = serde_json::from_str(&s)?;
+        let mut p: AppProfile = serde_json::from_str(&s)?;
+        // 节点集合为空时强制清空选中状态，避免下次启动从空列表里回退到残留节点 ID。
+        if p.nodes.is_empty() {
+            p.selected_node = None;
+        }
         Ok(p)
     } else {
         let p = AppProfile::default();

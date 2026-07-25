@@ -24,6 +24,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, SW_SHOWNORMAL, TranslateMessage,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_YESNO, MB_ICONWARNING, IDYES};
 
 use crate::app::{AppEvent, AppState};
 
@@ -277,8 +278,9 @@ fn run_tray(
                                 .iter()
                                 .find(|n| &n.id == id)
                                 .map(|n| n.name.clone())
-                        })
-                        .or(profile.selected_node.clone());
+                        });
+                    // 没有可用节点时不退回到 selected_node 字面量，否则托盘会显示
+                    // 一个"幽灵"节点名（profile 残留了 selected_node，但 nodes 已被清空）。
                     // 保留当前 running 态（Profile 事件不带 running）
                     let running = state
                         .status
@@ -381,6 +383,53 @@ pub async fn command_loop(
                 });
             }
             AppCommand::ToggleTun => {
+                // 开启 TUN 且未提权 → 弹出 MessageBox 询问是否提权
+                if !crate::system::admin::is_elevated() {
+                    let cur_on = state.config.read().await.enable_tun;
+                    if !cur_on {
+                        let msg = "TUN 模式需要管理员权限才能创建虚拟网卡。\n是否立即以管理员身份重新启动？";
+                        let title = "YAP-XFISH — 需要管理员权限";
+                        let msg_wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+                        let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+                        let ret = unsafe {
+                            MessageBoxW(
+                                0,
+                                msg_wide.as_ptr(),
+                                title_wide.as_ptr(),
+                                MB_YESNO | MB_ICONWARNING,
+                            )
+                        };
+                        if ret == IDYES {
+                            // 先持久化 TUN 开启，提权后的新实例会读取到 enable_tun: true
+                            {
+                                let mut c = state.config.write().await;
+                                c.enable_tun = true;
+                                let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
+                            }
+                            if crate::system::admin::elevate_and_restart() {
+                                let _ = state.core.stop().await;
+                                std::process::exit(0);
+                            } else {
+                                // 提权失败：回滚
+                                let mut c = state.config.write().await;
+                                c.enable_tun = false;
+                                let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
+                                state.log("warn", "提权失败或已被取消，TUN 未开启");
+                            }
+                        }
+                        // 用户点「否」：回滚托盘菜单的乐观勾选
+                        {
+                            let mut c = state.config.write().await;
+                            c.enable_tun = false;
+                            let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
+                        }
+                        state.emit(AppEvent::Config {
+                            system_proxy: state.config.read().await.system_proxy,
+                            enable_tun: false,
+                        });
+                        return; // 提前返回，不执行后续原有逻辑
+                    }
+                }
                 let new_on = {
                     let mut c = state.config.write().await;
                     c.enable_tun = !c.enable_tun;
@@ -388,12 +437,6 @@ pub async fn command_loop(
                     let _ = crate::config::manager::save_app_config(&state.data_dir, &c);
                     v
                 };
-                if new_on && !crate::system::admin::is_elevated() {
-                    state.log(
-                        "warn",
-                        "托盘：已开启 TUN，但当前未以管理员身份运行，sing-box 可能无法创建虚拟网卡。",
-                    );
-                }
                 // TUN 变更需要重建核心配置
                 let (p, c) = (
                     state.visible_profile().await,
@@ -497,7 +540,7 @@ async fn open_webui(state: &AppState) {
 /// 用系统关联程序静默打开 URL（默认浏览器），不弹出黑色控制台窗口。
 /// 等价于 `cmd /c start <url>`，但通过 ShellExecuteW 直接调用，无控制台闪烁。
 #[cfg(target_os = "windows")]
-fn shell_open_url(url: &str) {
+pub fn shell_open_url(url: &str) {
     use std::os::windows::ffi::OsStrExt;
 
     let url_w: Vec<u16> = std::ffi::OsStr::new(url)
@@ -518,6 +561,13 @@ fn shell_open_url(url: &str) {
             SW_SHOWNORMAL,
         );
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn shell_open_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn();
 }
 
 /// 把 status 里的节点 id 解析成 profile 中的显示名；找不到则回退 id。

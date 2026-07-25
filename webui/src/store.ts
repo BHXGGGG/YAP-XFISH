@@ -45,6 +45,9 @@ export const store = reactive({
   subProgress: {} as Record<string, { status: string; progress: number; message: string }>,
   // 日志过滤（'all' | 'info' | 'warn' | 'error'）
   logFilter: 'all' as 'all' | 'info' | 'warn' | 'error',
+  // 首启添加订阅引导：每次进入管理面板，App.vue 在拿到真实订阅列表后置 true；
+  // 仪表盘检测后立即消费（置回 false），避免重复弹。
+  promptFirstRun: false,
 })
 
 let toastTimer: any = null

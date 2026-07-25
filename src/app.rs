@@ -263,7 +263,13 @@ impl AppState {
             .map(|id| vis.nodes.iter().any(|n| &n.id == id))
             .unwrap_or(false);
         if !valid {
-            vis.selected_node = vis.nodes.first().map(|n| n.id.clone());
+            // 节点集合为空时显式 None；不要从空 nodes 列表里"回退到 first"，
+            // 那样会从残留订阅里挑出旧节点，造成"未导入订阅仍连接固定节点"。
+            vis.selected_node = if vis.nodes.is_empty() {
+                None
+            } else {
+                vis.nodes.first().map(|n| n.id.clone())
+            };
         }
         vis
     }

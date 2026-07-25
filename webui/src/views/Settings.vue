@@ -2,11 +2,17 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
+import Modal from '../components/Modal.vue'
 
 const form = reactive({ ...store.config })
 watch(() => store.config, (c) => Object.assign(form, c), { deep: true })
 
 async function save() {
+  // TUN 从关→开 且 未提权 → 弹提权引导
+  if (form.enable_tun && !store.config.enable_tun && !store.status.elevated) {
+    showElevateDialog.value = true
+    return
+  }
   try {
     await api.updateConfig({ ...form })
     toast('设置已保存（修改端口需重启后台）')
@@ -28,44 +34,21 @@ async function refreshMem() {
   try { mem.value = await api.memDebug() } catch (e: any) { toast(e.message) }
 }
 
-/* ---------- 实时日志（原仪表盘） ---------- */
-const SOURCE_COLOR: Record<string, string> = {
-  core:    '#3b82f6',
-  sub:     '#22c55e',
-  http:    '#6b7280',
-  config:  '#a855f7',
-  latency: '#f59e0b',
-  net:     '#06b6d4',
-  app:     '#9ca3af',
-}
-const filteredLogs = computed(() =>
-  store.logFilter === 'all'
-    ? store.logs
-    : store.logs.filter((l: any) => l.level === store.logFilter)
-)
-function fmtTime(ts: number) {
-  const d = new Date(ts)
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
-}
-function setFilter(f: 'all' | 'info' | 'warn' | 'error') { store.logFilter = f }
-function clearLogs() { store.logs.splice(0, store.logs.length) }
-const counts = computed(() => {
-  const c = { info: 0, warn: 0, error: 0 }
-  for (const l of store.logs) {
-    if (l.level === 'info' || l.level === 'warn' || l.level === 'error') {
-      c[l.level as 'info' | 'warn' | 'error']++
-    }
-  }
-  return c
-})
-const autoscroll = ref(true)
-const logEl = ref<HTMLElement | null>(null)
-watch(filteredLogs, () => {
-  if (!autoscroll.value) return
-  queueMicrotask(() => {
-    if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
+/* ---------- TUN 提权引导 ---------- */
+const showElevateDialog = ref(false)
+function onElevateConfirm() {
+  showElevateDialog.value = false
+  api.adminElevate().then(() => {
+    toast('正在以管理员身份重新启动…')
+  }).catch((e: any) => {
+    toast('提权失败: ' + e.message)
   })
-})
+}
+function onElevateCancel() {
+  showElevateDialog.value = false
+}
+
+/* ---------- 实时日志（原仪表盘，现已迁出到 Logs.vue） ---------- */
 </script>
 
 <template>
@@ -114,77 +97,31 @@ watch(filteredLogs, () => {
       </label>
     </div>
 
-    <!-- 实时日志：从仪表盘迁到这里 -->
-    <h3 style="margin-top:24px">实时日志</h3>
-    <div class="log-filters">
-      <button :class="{ active: store.logFilter === 'all' }" @click="setFilter('all')">
-        全部 <span class="badge-mini">{{ store.logs.length }}</span>
-      </button>
-      <button :class="{ active: store.logFilter === 'info' }" @click="setFilter('info')">
-        info <span class="badge-mini">{{ counts.info }}</span>
-      </button>
-      <button :class="{ active: store.logFilter === 'warn' }" @click="setFilter('warn')">
-        warn <span class="badge-mini warn">{{ counts.warn }}</span>
-      </button>
-      <button :class="{ active: store.logFilter === 'error' }" @click="setFilter('error')">
-        error <span class="badge-mini error">{{ counts.error }}</span>
-      </button>
-      <button :class="{ active: autoscroll }" @click="autoscroll = !autoscroll" title="自动滚到最新一行">
-        自动滚动
-      </button>
-      <button class="clear" @click="clearLogs" title="清空当前日志（不影响后端）">清空</button>
-    </div>
+    <!-- 实时日志已迁出到 Logs.vue（左侧“日志”导航） -->
 
-    <div v-if="!filteredLogs.length" class="log-empty">暂无日志</div>
-    <div v-else class="log" ref="logEl">
-      <div v-for="(l, i) in filteredLogs" :key="i"
-           class="log-row" :class="['lv-' + (l.level || 'info'), 'src-' + (l.source || 'app')]">
-        <span class="ts">{{ fmtTime(l.ts) }}</span>
-        <span class="src" :style="{ background: SOURCE_COLOR[l.source] || SOURCE_COLOR.app }">
-          {{ l.source || 'app' }}
-        </span>
-        <span class="lvl">{{ l.level || 'info' }}</span>
-        <span class="msg">{{ l.message }}</span>
+    <Modal :open="showElevateDialog" title="需要管理员权限" subtitle="TUN 模式需要管理员权限才能创建虚拟网卡" icon="⚡" :width="440" @close="onElevateCancel">
+      <div class="elevate-body">
+        <p>当前未以管理员身份运行，启用 TUN 后 sing-box 无法创建虚拟网卡。</p>
+        <p>是否立即<strong>以管理员身份重新启动</strong> YAP-XFISH？重启后自动启用 TUN。</p>
+        <div class="elevate-actions">
+          <button class="primary elevate-btn" @click="onElevateConfirm">以管理员身份运行</button>
+          <button @click="onElevateCancel">取消</button>
+        </div>
       </div>
-    </div>
+    </Modal>
   </section>
 </template>
 
 <style scoped>
-/* 复用仪表盘日志样式，集中到这里 */
-.log-filters { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
-.log-filters button { padding: 3px 10px; font-size: 12px; }
-.log-filters button.active { background: var(--primary); color: #fff; }
-.log-filters button.clear  { color: #b91c1c; }
-.badge-mini {
-  display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px;
-  background: #e5e7eb; color: #374151; border-radius: 9px;
-  font-size: 11px; text-align: center; vertical-align: middle;
+/* 实时日志样式已迁出到 Logs.vue */
+
+.elevate-body { padding: 4px 0; }
+.elevate-body p { margin: 8px 0; line-height: 1.6; color: #374151; font-size: 14px; }
+.elevate-actions { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; }
+.elevate-btn {
+  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+  border: 1px solid #1d4ed8; color: #fff; padding: 8px 18px;
+  border-radius: 8px; font-weight: 600;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
 }
-.badge-mini.warn  { background: #fef3c7; color: #92400e; }
-.badge-mini.error { background: #fee2e2; color: #991b1b; }
-.log-empty {
-  padding: 16px; color: #9ca3af; text-align: center;
-  background: var(--panel); border-radius: var(--radius);
-}
-.log {
-  max-height: 480px; overflow-y: auto;
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.log-row {
-  display: grid; grid-template-columns: 76px 56px 50px 1fr; gap: 8px;
-  padding: 3px 10px; border-bottom: 1px solid #f3f4f6; align-items: baseline;
-}
-.log-row:hover { background: #f9fafb; }
-.ts { color: #9ca3af; }
-.src { color: #fff; text-align: center; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: .3px; padding: 1px 0; }
-.lvl { font-weight: 700; }
-.msg { white-space: pre-wrap; word-break: break-all; }
-.lv-info  .lvl { color: #2563eb; }
-.lv-warn  { background: #fffbeb; }
-.lv-warn  .lvl { color: #d97706; }
-.lv-error { background: #fef2f2; }
-.lv-error .lvl { color: #dc2626; }
 </style>

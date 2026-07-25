@@ -74,6 +74,12 @@ async fn main() -> Result<()> {
         state.log_with("core", "error", format!("启动时自动启动本地代理失败: {e}"));
     }
 
+    // 首次启动 / 尚未配置订阅：自动打开管理面板到默认浏览器。
+    // 不会重复打开：仅在 `subscriptions.json` 缺失或为空时触发；后续托盘左键 / 菜单项保持原行为。
+    if crate::subscription::manager::has_no_subscriptions(&data_dir) {
+        spawn_open_webui_when_ready(state.clone());
+    }
+
     // 若配置要求系统代理，则在核心起来后同步 WinINET。
     {
         let cfg = state.config.read().await;
@@ -146,4 +152,30 @@ async fn auto_start_local_proxy(state: &Arc<AppState>) -> Result<()> {
     state.log_with("core", "info", "本地代理已随程序启动");
     println!("[proxy] 本地代理已启动");
     Ok(())
+}
+
+/// 后台等待 WebUI 就绪后用系统默认浏览器打开管理面板。
+/// 用于「首次启动 / 尚未配置订阅」的引导场景，最多尝试 5 秒。
+fn spawn_open_webui_when_ready(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let port = state.config.read().await.web_port;
+        let url = format!("http://127.0.0.1:{port}");
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let started = std::time::Instant::now();
+        loop {
+            if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
+                .is_ok()
+            {
+                break;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(5) {
+                eprintln!("[proxy] 自动打开管理面板超时（>5s）");
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        // 端口可达后再等 200ms，让 axum 真正完成路由就绪。
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        system::tray::shell_open_url(&url);
+    });
 }

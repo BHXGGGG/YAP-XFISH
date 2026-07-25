@@ -4,19 +4,19 @@ import { store, toast } from './store'
 import { api } from './api'
 import { connectWs } from './ws'
 import Dashboard from './views/Dashboard.vue'
-import Profiles from './views/Profiles.vue'
 import Subscriptions from './views/Subscriptions.vue'
 import Rules from './views/Rules.vue'
 import Settings from './views/Settings.vue'
+import Logs from './views/Logs.vue'
 
 const tabs = [
   { key: 'dashboard', label: '仪表盘', icon: '▦' },
-  { key: 'profiles', label: '节点', icon: '⬡' },
   { key: 'subscriptions', label: '订阅', icon: '↻' },
   { key: 'rules', label: '规则', icon: '⚑' },
   { key: 'settings', label: '设置', icon: '⚙' },
+  { key: 'logs', label: '日志', icon: '☰' },
 ]
-const views: Record<string, any> = { dashboard: Dashboard, profiles: Profiles, subscriptions: Subscriptions, rules: Rules, settings: Settings }
+const views: Record<string, any> = { dashboard: Dashboard, subscriptions: Subscriptions, rules: Rules, settings: Settings, logs: Logs }
 const active = ref('dashboard')
 
 // 右上角绿色指示：系统代理 / TUN 启用时显示
@@ -44,9 +44,26 @@ async function refreshAll() {
     store.status.enable_tun = !!(s as any).enable_tun || !!(c as any).enable_tun
     store.subscriptions = subs
     store.rules = rs
+    // 数据就绪后再决定是否提示首启添加订阅（避免 Dashboard 在 refreshAll
+    // 还没完成时拿到空数组误弹）。7 天内手动关闭过的不再提示。
+    const empty = !subs || subs.length === 0
+    if (empty && !store.promptFirstRun && !recentlyDismissedFirstRunDialog()) {
+      store.promptFirstRun = true
+    }
   } catch (e: any) {
     toast('加载失败: ' + e.message)
   }
+}
+
+const FIRST_RUN_LS_KEY = 'yap-xfish.add-dialog.dismissed.v1'
+function recentlyDismissedFirstRunDialog(): boolean {
+  try {
+    const raw = localStorage.getItem(FIRST_RUN_LS_KEY)
+    if (!raw) return false
+    const ts = Number(raw) || 0
+    const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000
+    return ts > 0 && Date.now() - ts < SEVEN_DAYS
+  } catch { return false }
 }
 
 onMounted(async () => {
@@ -84,7 +101,7 @@ onMounted(async () => {
           <i class="dot"></i>{{ it.label }}
         </span>
       </div>
-      <component :is="views[active]" @refresh="refreshAll" />
+      <component :is="views[active]" @refresh="refreshAll" @navigate="(tab) => active = tab" />
     </main>
     <div v-if="store.toast" class="toast">{{ store.toast }}</div>
   </div>

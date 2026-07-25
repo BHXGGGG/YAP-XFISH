@@ -18,6 +18,15 @@ fn subs_file(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join(SUBS_FILE)
 }
 
+/// 首次启动 / 未配置场景的判定：数据目录里没有订阅，或订阅列表为空。
+/// 启动时会基于此决定是否自动打开浏览器到管理面板。
+pub fn has_no_subscriptions(data_dir: &Path) -> bool {
+    match load_subscriptions(data_dir) {
+        Ok(list) => list.is_empty(),
+        Err(_) => true,
+    }
+}
+
 pub fn load_subscriptions(data_dir: &Path) -> AppResult<Vec<Subscription>> {
     let p = subs_file(data_dir);
     if p.exists() {
@@ -282,7 +291,13 @@ fn profile_count_for(id: &str, profile: &AppProfile) -> usize {
 }
 
 /// 选中节点失效时回退到第一个节点；无任何节点则置空（渲染时落入 direct）。
+/// 注意：节点集合为空时不要"回退到 nodes.first()"，否则会从残留节点里挑一个
+/// 看似"自动"继续使用旧订阅的节点；这里统一保持 None。
 fn ensure_selection(p: &mut AppProfile) {
+    if p.nodes.is_empty() {
+        p.selected_node = None;
+        return;
+    }
     let valid = p
         .selected_node
         .as_ref()

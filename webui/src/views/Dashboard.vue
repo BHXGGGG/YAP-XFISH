@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
+import Modal from '../components/Modal.vue'
+import AddSubscriptionForm from '../components/AddSubscriptionForm.vue'
 
 const modes: [string, string][] = [['global', '全局'], ['rule', '规则'], ['direct', '直连']]
 
@@ -75,6 +77,8 @@ async function testAll() {
     if (n._testingTimer) clearTimeout(n._testingTimer)
     n._testingTimer = setTimeout(() => { n.testing = false }, 30_000)
   })
+  // 测全部延迟时自动按延迟排序，方便用户即时看到结果排名
+  sortByLatency.value = true
   try { await api.testAllLatency(); toast('已开始测速（结果实时刷新）') } catch (e: any) { toast(e.message) }
 }
 async function testOne(id: string, ev?: Event) {
@@ -105,12 +109,83 @@ const statusLabel = computed(() => {
 })
 const statusKind = computed(() => (store.status.running ? 'on' : 'off'))
 
+async function toggleConfigFlag(key: 'system_proxy' | 'enable_tun', value: boolean) {
+  // TUN 开启且未提权 → 弹提权引导弹窗
+  if (key === 'enable_tun' && value === true && !store.status.elevated) {
+    showElevateDialog.value = true
+    return
+  }
+  try {
+    const next = { ...store.config, [key]: value }
+    const updated = await api.updateConfig(next as any)
+    Object.assign(store.config, updated)
+    if (key === 'system_proxy') {
+      store.status.system_proxy = value
+      toast(value ? '已开启系统代理' : '已关闭系统代理')
+    } else {
+      store.status.enable_tun = value
+      toast(value ? '已开启 TUN' : '已关闭 TUN')
+    }
+  } catch (e: any) { toast(e.message) }
+}
+
 const currentNodeLabel = computed(() => {
   const id = store.status.current_node || store.profile.selected_node
   if (!id) return '—'
   if (store.status.current_node_name) return store.status.current_node_name
   const n = store.profile.nodes.find((x: any) => x.id === id)
   return n?.name || id
+})
+
+/* ---------- TUN 提权引导 ---------- */
+const showElevateDialog = ref(false)
+function onElevateConfirm() {
+  showElevateDialog.value = false
+  api.adminElevate().then(() => {
+    toast('正在以管理员身份重新启动…')
+  }).catch((e: any) => {
+    toast('提权失败: ' + e.message)
+  })
+}
+function onElevateCancel() {
+  showElevateDialog.value = false
+}
+
+/* ---------- 首次进入引导：未配置订阅时弹出添加订阅小窗 ---------- */
+const showAddDialog = ref(false)
+const LS_KEY = 'yap-xfish.add-dialog.dismissed.v1'
+
+function openAddDialog() { showAddDialog.value = true }
+function closeAddDialog() {
+  showAddDialog.value = false
+  store.promptFirstRun = false
+  try { localStorage.setItem(LS_KEY, String(Date.now())) } catch {}
+}
+
+function onAdded(payload: { id: string; name: string }) {
+  // 添加成功后关闭弹窗，列表由 WebSocket 实时推送
+  showAddDialog.value = false
+  store.promptFirstRun = false
+  try { localStorage.setItem(LS_KEY, String(Date.now())) } catch {}
+  toast(`已添加：${payload.name}`)
+}
+
+// 监听 App.vue 真正拿到后端订阅数据后设置的首启提示信号
+watch(() => store.promptFirstRun, (v) => {
+  if (v && store.subscriptions && store.subscriptions.length === 0) {
+    showAddDialog.value = true
+  } else if (v && store.subscriptions && store.subscriptions.length > 0) {
+    // 已有订阅：直接把信号消费掉，不弹
+    store.promptFirstRun = false
+  }
+}, { immediate: true })
+
+// 订阅列表从空变非空（例如后台 refreshAll 完成、或用户刚添加了第一条）→ 立刻关闭弹窗
+watch(() => store.subscriptions?.length ?? 0, (n) => {
+  if (n > 0 && showAddDialog.value) {
+    showAddDialog.value = false
+    store.promptFirstRun = false
+  }
 })
 </script>
 
@@ -123,6 +198,18 @@ const currentNodeLabel = computed(() => {
         <div class="k">代理状态</div>
         <div class="v">
           <span class="badge" :class="statusKind">{{ statusLabel }}</span>
+        </div>
+        <div class="status-toggles">
+          <label class="status-toggle" :class="{ on: sysproxyOn }">
+            <input type="checkbox" :checked="sysproxyOn" @change="toggleConfigFlag('system_proxy', ($event.target as HTMLInputElement).checked)" />
+            <span>系统代理</span>
+            <em>{{ sysproxyOn ? '开' : '关' }}</em>
+          </label>
+          <label class="status-toggle" :class="{ on: tunOn }">
+            <input type="checkbox" :checked="tunOn" @change="toggleConfigFlag('enable_tun', ($event.target as HTMLInputElement).checked)" />
+            <span>TUN 模式</span>
+            <em>{{ tunOn ? '开' : '关' }}</em>
+          </label>
         </div>
       </div>
       <div class="card mode-card">
@@ -164,7 +251,9 @@ const currentNodeLabel = computed(() => {
     </div>
 
     <div v-if="!visibleNodes.length" class="empty">
-      暂无节点。请在「订阅」中添加订阅，或后续手动导入。
+      暂无节点。
+      <button class="link-btn" @click="openAddDialog">立即添加订阅</button>
+      ，或在「订阅」页中维护。
     </div>
     <div v-else-if="!displayedNodes.length" class="empty">
       没有匹配的节点：<b>{{ query }}</b>
@@ -210,8 +299,26 @@ const currentNodeLabel = computed(() => {
     </div>
 
     <div class="log-hint">
-      💡 实时日志请前往 <a href="#" @click.prevent="emit('navigate', 'settings')">设置</a> 页查看。
+      💡 实时日志请前往 <a href="#" @click.prevent="emit('navigate', 'logs')">日志</a> 页查看。
     </div>
+
+    <Modal :open="showAddDialog" title="添加你的第一个订阅" subtitle="首次使用只需要一个链接，剩下都自动" icon="+" :width="520" @close="closeAddDialog">
+      <AddSubscriptionForm
+        @added="onAdded"
+        @cancel="closeAddDialog"
+      />
+    </Modal>
+
+    <Modal :open="showElevateDialog" title="需要管理员权限" subtitle="TUN 模式需要管理员权限才能创建虚拟网卡" icon="⚡" :width="440" @close="onElevateCancel">
+      <div class="elevate-body">
+        <p>当前未以管理员身份运行，启用 TUN 后 sing-box 无法创建虚拟网卡。</p>
+        <p>是否立即<strong>以管理员身份重新启动</strong> YAP-XFISH？重启后自动启用 TUN。</p>
+        <div class="elevate-actions">
+          <button class="primary elevate-btn" @click="onElevateConfirm">以管理员身份运行</button>
+          <button @click="onElevateCancel">取消</button>
+        </div>
+      </div>
+    </Modal>
   </section>
 </template>
 
@@ -240,6 +347,38 @@ const currentNodeLabel = computed(() => {
 }
 .mode-btn:hover  { background: #eff6ff; border-color: #93c5fd; }
 .mode-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+.status-toggles {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.status-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: #374151;
+  transition: background .15s, border-color .15s;
+}
+.status-toggle input { width: 14px; height: 14px; }
+.status-toggle em {
+  font-style: normal;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #991b1b;
+}
+.status-toggle.on { background: #ecfdf5; border-color: #86efac; color: #166534; }
+.status-toggle.on em { background: #dcfce7; color: #166534; }
 
 .actions { display: flex; gap: 8px; margin: 12px 0 18px; }
 
@@ -330,4 +469,20 @@ const currentNodeLabel = computed(() => {
 }
 .log-hint a { color: var(--primary); text-decoration: none; }
 .log-hint a:hover { text-decoration: underline; }
+
+.link-btn {
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  color: var(--primary); font: inherit; text-decoration: underline;
+}
+.link-btn:hover { color: #1d4ed8; }
+
+.elevate-body { padding: 4px 0; }
+.elevate-body p { margin: 8px 0; line-height: 1.6; color: #374151; font-size: 14px; }
+.elevate-actions { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; }
+.elevate-btn {
+  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%);
+  border: 1px solid #1d4ed8; color: #fff; padding: 8px 18px;
+  border-radius: 8px; font-weight: 600;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
 </style>

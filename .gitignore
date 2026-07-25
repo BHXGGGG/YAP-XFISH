@@ -68,3 +68,10 @@ proxy_rs.pdb
 /release/*.zip
 /release/*.exe
 /release/**/*.exe
+
+# ===== Hermes 本地会话/计划（不属于仓库） =====
+/.hermes/
+/.hermes/**
+
+# ===== 本地解压的 release 目录（测试用，ZIP 走 GitHub Releases） =====
+/release/yap-xfish-v*/

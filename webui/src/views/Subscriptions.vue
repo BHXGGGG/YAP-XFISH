@@ -59,13 +59,14 @@ async function add() {
   try {
     // 名称未填：去掉 https:// 或 http:// 后取前 7 个字符（与后端规则一致）
     const name = (form.name || '').trim() || defaultSubNameFromUrl(form.url)
-    await api.addSubscription({
+    const added = await api.addSubscription({
       name,
       url: form.url,
       interval: form.interval,
       enabled: form.enabled,
       user_agent: form.userAgent || undefined,
     })
+    await api.updateSubscription(added.id)
     form.name = ''
     form.url = ''
     form.userAgent = ''
@@ -109,6 +110,30 @@ async function updateAll() {
 async function toggleEnabled(s: any) {
   try {
     await api.updateSubscriptionSettings(s.id, { enabled: !s.enabled })
+    // 列表由后端 WS 实时推送
+  } catch (e: any) { toast(e.message) }
+}
+
+const renamingId = ref<string | null>(null)
+const renameValue = ref('')
+
+function startRename(s: any) {
+  renamingId.value = s.id
+  renameValue.value = s.name
+}
+
+function cancelRename() {
+  renamingId.value = null
+  renameValue.value = ''
+}
+
+async function saveRename(s: any) {
+  const name = renameValue.value.trim()
+  if (!name) { toast('订阅名称不能为空'); return }
+  try {
+    await api.updateSubscriptionSettings(s.id, { name })
+    cancelRename()
+    toast('名称已更新')
     // 列表由后端 WS 实时推送
   } catch (e: any) { toast(e.message) }
 }
@@ -168,6 +193,23 @@ load()
             节点数 {{ s.node_count }} · 上次更新 {{ fmtTime(s.last_updated) }}
             <span v-if="s.last_message"> · {{ s.last_message }}</span>
           </div>
+          <div class="row-actions">
+            <button class="primary" @click="updateNow(s.id)">立即更新</button>
+            <button @click="toggleEnabled(s)">{{ s.enabled ? '停用' : '启用' }}</button>
+            <template v-if="renamingId === s.id">
+              <input
+                v-model="renameValue"
+                class="rename-input"
+                type="text"
+                aria-label="订阅名称"
+                @keyup.enter="saveRename(s)"
+                @keyup.escape="cancelRename"
+              />
+              <button @click="saveRename(s)">保存</button>
+              <button @click="cancelRename">取消</button>
+            </template>
+            <button v-else @click="startRename(s)">重命名</button>
+          </div>
           <div
             v-if="store.subProgress[s.id] && store.subProgress[s.id].status === 'updating'"
             class="progress"
@@ -177,8 +219,6 @@ load()
           </div>
         </div>
         <div class="actions">
-          <button class="primary" @click="updateNow(s.id)">立即更新</button>
-          <button @click="toggleEnabled(s)">{{ s.enabled ? '停用' : '启用' }}</button>
           <button class="danger" @click="del(s.id)">删除</button>
         </div>
       </li>
@@ -190,6 +230,8 @@ load()
 <style scoped>
 .grow { flex: 1; min-width: 0; }
 .actions { display: flex; flex-direction: column; gap: 6px; }
+.row-actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rename-input { width: 130px; padding: 4px 6px; }
 .progress { margin-top: 6px; position: relative; height: 16px; background: #eee; border-radius: 4px; overflow: hidden; }
 .bar { height: 100%; background: #3b82f6; transition: width .3s; }
 .pm { position: absolute; left: 6px; top: 0; font-size: 11px; line-height: 16px; color: #333; }
