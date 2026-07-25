@@ -206,8 +206,8 @@ pub async fn core_stop(State(state): State<Arc<AppState>>) -> AppResult<Json<ser
     {
         let mut st = state.status.write().await;
         st.running = false;
+        // 保留 traffic_up / traffic_down：停止后仪表盘继续显示本会话累计
     }
-    state.reset_traffic().await;
     {
         let st = state.status.read().await;
         state.emit(AppEvent::Status {
