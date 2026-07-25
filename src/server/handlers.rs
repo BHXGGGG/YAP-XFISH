@@ -182,6 +182,7 @@ pub async fn core_start(State(state): State<Arc<AppState>>) -> AppResult<Json<se
                 st.mode = p.mode;
                 st.current_node = p.selected_node.clone();
             }
+            state.reset_traffic().await;
             state.emit(AppEvent::Status {
                 running: true,
                 mode: p.mode,
@@ -206,6 +207,7 @@ pub async fn core_stop(State(state): State<Arc<AppState>>) -> AppResult<Json<ser
         let mut st = state.status.write().await;
         st.running = false;
     }
+    state.reset_traffic().await;
     {
         let st = state.status.read().await;
         state.emit(AppEvent::Status {
@@ -229,6 +231,7 @@ pub async fn core_restart(
         let mut st = state.status.write().await;
         st.running = true;
     }
+    state.reset_traffic().await;
     state.emit(AppEvent::Status {
         running: true,
         mode: p.mode,

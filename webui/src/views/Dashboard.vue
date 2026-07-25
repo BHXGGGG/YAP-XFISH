@@ -27,6 +27,12 @@ function protocolMeta(kind: string) {
   return PROTOCOL_META[kind] || { label: kind || '?', color: '#64748b' }
 }
 
+function fmtBytes(n: number): string {
+  if (!n || n < 0) return '0.00 MB'
+  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+  return (n / 1024 / 1024).toFixed(2) + ' MB'
+}
+
 const visibleNodes = computed(() => {
   const enabled = new Set(
     store.subscriptions.filter((s: any) => s.enabled).map((s: any) => s.id)
@@ -223,8 +229,8 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
       </div>
       <div class="card"><div class="k">当前节点</div><div class="v node-name">{{ currentNodeLabel }}</div></div>
       <div class="card"><div class="k">节点数</div><div class="v">{{ store.status.node_count }}</div></div>
-      <div class="card"><div class="k">上行</div><div class="v">{{ (store.status.traffic_up / 1024 / 1024).toFixed(2) }} MB</div></div>
-      <div class="card"><div class="k">下行</div><div class="v">{{ (store.status.traffic_down / 1024 / 1024).toFixed(2) }} MB</div></div>
+      <div class="card"><div class="k">上行</div><div class="v">{{ fmtBytes(store.status.traffic_up) }}</div></div>
+      <div class="card"><div class="k">下行</div><div class="v">{{ fmtBytes(store.status.traffic_down) }}</div></div>
     </div>
 
     <div class="actions">

@@ -57,6 +57,9 @@ async fn main() -> Result<()> {
     // 启动订阅定时调度（周期 / 自定义 Cron 自动更新）
     subscription::scheduler::start(state.clone());
 
+    // 会话上下行累计：轮询 sing-box Clash /traffic 并 WS 推送
+    core::traffic_poller::start(state.clone());
+
     // 启动系统托盘（独立线程 + Win32 消息泵）与托盘命令处理循环。
     let thread_id: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
     let (cmd_tx, cmd_rx) = unbounded_channel();
@@ -144,6 +147,7 @@ async fn auto_start_local_proxy(state: &Arc<AppState>) -> Result<()> {
         st.mode = p.mode;
         st.current_node = p.selected_node.clone();
     }
+    state.reset_traffic().await;
     state.emit(app::AppEvent::Status {
         running: true,
         mode: p.mode,

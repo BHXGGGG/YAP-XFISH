@@ -219,6 +219,16 @@ impl AppState {
         let _ = self.event_tx.send(ev);
     }
 
+    /// 清零会话上下行累计并广播（core start/stop/restart 调用）。
+    pub async fn reset_traffic(&self) {
+        {
+            let mut st = self.status.write().await;
+            st.traffic_up = 0;
+            st.traffic_down = 0;
+        }
+        self.emit(AppEvent::Traffic { up: 0, down: 0 });
+    }
+
     /// 便捷的日志广播：source 默认为 "app"。
     pub fn log(&self, level: &str, message: impl Into<String>) {
         self.log_with("app", level, message);
