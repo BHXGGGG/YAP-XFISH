@@ -28,6 +28,8 @@ pub fn start(state: Arc<AppState>) {
         let mut last_core_up: Option<u64> = None;
         let mut last_core_down: Option<u64> = None;
         let mut was_running = false;
+        // 每 30 次 tick（约 30s）把会话增量并入今日历史，供侧栏「流量统计」使用。
+        let mut history_ticks: u32 = 0;
 
         let mut ticker = tokio::time::interval(INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -54,6 +56,9 @@ pub fn start(state: Arc<AppState>) {
                         up_rate: 0,
                         down_rate: 0,
                     });
+                    // 停止时立刻落盘，避免进程异常退出丢今日数据。
+                    crate::core::traffic_history::record_tick(&state).await;
+                    history_ticks = 0;
                     was_running = false;
                 }
                 continue;
@@ -88,6 +93,12 @@ pub fn start(state: Arc<AppState>) {
                 up_rate: du,
                 down_rate: dd,
             });
+
+            history_ticks = history_ticks.wrapping_add(1);
+            if history_ticks >= 30 {
+                history_ticks = 0;
+                crate::core::traffic_history::record_tick(&state).await;
+            }
         }
     });
 }

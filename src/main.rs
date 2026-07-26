@@ -39,6 +39,9 @@ async fn main() -> Result<()> {
     let (app_config, profile) = app::load_or_init(&data_dir)?;
     let state = Arc::new(AppState::new(app_config, profile, data_dir.clone()));
 
+    // 侧栏「流量统计」依赖此初始化；未调用则 /api/traffic/daily 永远返回 0。
+    core::traffic_history::init_history(&data_dir);
+
     // 按配置应用开机启动（HKCU Run）。
     system::autostart::apply_autostart(state.config.read().await.autostart);
 

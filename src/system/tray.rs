@@ -17,12 +17,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use tray_icon::Icon;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use windows_sys::Win32::Foundation::BOOL;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, SW_SHOWNORMAL, TranslateMessage,
+    DispatchMessageW, PeekMessageW, MSG, PM_REMOVE, SW_SHOWNORMAL, TranslateMessage, WM_QUIT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_YESNO, MB_ICONWARNING, IDYES};
 
@@ -161,11 +160,14 @@ fn run_tray(
     let mut rx = state.event_tx.subscribe();
 
     // Win32 消息泵：菜单点击与托盘点击都经此循环分发。
+    //
+    // 关键：不能用阻塞的 GetMessageW。网页端改 system_proxy/enable_tun 时
+    // 后端会 emit AppEvent::Config，但不会产生 Win32 消息——GetMessageW 会一直
+    // 睡到用户鼠标碰到托盘才醒，try_recv 挪到前后都没用。
+    // 改成 PeekMessageW 非阻塞排空 + 短 sleep，让 broadcast 每 ~50ms 被 poll 一次。
     let mut msg: MSG = unsafe { std::mem::zeroed() };
-    loop {
-        // 先排空 broadcast：网页端改 system_proxy/enable_tun 时不会触发
-        // Win32 消息，必须主动 poll 才能让托盘角标即时刷新。否则下一次
-        // GetMessageW 唤醒（用户鼠标移到托盘）才会刷新，看起来像「卡了」。
+    'pump: loop {
+        // 1) 排空 broadcast：角标 / 勾选 / tooltip 即时刷新
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 AppEvent::Status {
@@ -173,7 +175,6 @@ fn run_tray(
                     current_node,
                     ..
                 } => {
-                    // current_node 是 id，解析成 name 再显示
                     let label = resolve_node_label(&state, current_node.as_ref());
                     status_item.set_text(status_text(running, &label));
                     let _ = tray.set_tooltip(Some(tooltip_text(running)));
@@ -186,26 +187,18 @@ fn run_tray(
                     tun_on = enable_tun;
                     sysproxy_item.set_checked(sysproxy_on);
                     tun_item.set_checked(tun_on);
-                    // 系统代理 / TUN 状态点：右上紫点、左上黄点
                     if let Err(e) = tray.set_icon(Some(make_icon(sysproxy_on, tun_on))) {
                         eprintln!("[proxy] 刷新托盘图标失败: {e}");
                     }
                 }
                 AppEvent::Profile { profile } => {
-                    // 选中节点变化时，Profile 也会推送；刷新顶部名称
-                    let label = profile
-                        .selected_node
-                        .as_ref()
-                        .and_then(|id| {
-                            profile
-                                .nodes
-                                .iter()
-                                .find(|n| &n.id == id)
-                                .map(|n| n.name.clone())
-                        });
-                    // 没有可用节点时不退回到 selected_node 字面量，否则托盘会显示
-                    // 一个"幽灵"节点名（profile 残留了 selected_node，但 nodes 已被清空）。
-                    // 保留当前 running 态（Profile 事件不带 running）
+                    let label = profile.selected_node.as_ref().and_then(|id| {
+                        profile
+                            .nodes
+                            .iter()
+                            .find(|n| &n.id == id)
+                            .map(|n| n.name.clone())
+                    });
                     let running = state
                         .status
                         .try_read()
@@ -217,19 +210,19 @@ fn run_tray(
             }
         }
 
-        let ret: BOOL = unsafe { GetMessageW(&mut msg, 0, 0, 0) };
-        if ret == 0 {
-            break; // 收到 WM_QUIT
-        }
-        if ret == -1 {
-            continue;
-        }
-        if msg.message == WM_USER_QUIT {
-            break;
-        }
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        // 2) 非阻塞排空 Win32 消息队列
+        loop {
+            let has = unsafe { PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE) };
+            if has == 0 {
+                break;
+            }
+            if msg.message == WM_QUIT || msg.message == WM_USER_QUIT {
+                break 'pump;
+            }
+            unsafe {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
 
         // 菜单点击 → 派发命令
@@ -294,6 +287,9 @@ fn run_tray(
                 _ => {}
             }
         }
+
+        // 无消息时让出 CPU；50ms 足够让角标"看起来即时"，又不会空转。
+        std::thread::sleep(Duration::from_millis(50));
     }
 
     // 干净退出：drop 托盘图标（引用计数归零会移除通知区图标），再结束进程。
