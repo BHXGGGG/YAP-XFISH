@@ -1,5 +1,5 @@
 use crate::app::AppConfig;
-use crate::config::model::{AppProfile, Node, ProxyMode};
+use crate::config::model::{AppProfile, Node, ProxyMode, RouteRule};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -20,17 +20,19 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
             .unwrap_or_else(|| "direct".to_string()),
     };
 
-    let rules: Vec<Value> = profile
+    // 用户规则必须渲染为 sing-box 1.13 合法字段（domain/ip_cidr/...），
+    // 旧写法 {type,payload} 会 FATAL: unknown rule type，导致核心挂掉全站不可用。
+    let user_rules: Vec<Value> = profile
         .rules
         .iter()
-        .map(|r| {
-            json!({
-                "type": r.r#type,
-                "payload": r.payload,
-                "outbound": r.outbound,
-            })
-        })
+        .filter_map(route_rule_to_json)
         .collect();
+    let mut needed_rule_sets: HashSet<String> = HashSet::new();
+    for r in &profile.rules {
+        if let Some(tag) = rule_set_tag_for(r) {
+            needed_rule_sets.insert(tag);
+        }
+    }
 
     // sing-box 1.13：inbound 上的 sniff 字段已移除，改用 route 规则动作 `sniff`。
     //
@@ -49,7 +51,7 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         json!({ "protocol": "dns", "action": "hijack-dns" }),
         json!({ "port": [53, 853], "action": "hijack-dns" }),
     ];
-    all_rules.extend(rules);
+    all_rules.extend(user_rules);
 
     let mut route = json!({
         "rules": all_rules,
@@ -66,23 +68,28 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
             arr.push(json!({ "rule_set": "geoip-cn", "outbound": "direct" }));
             arr.push(json!({ "rule_set": "geosite-cn", "outbound": "direct" }));
         }
-        // 声明远程规则集（首次启动时经直连下载并缓存到 data_dir）
-        route["rule_set"] = json!([
-            {
-                "type": "remote",
-                "tag": "geosite-cn",
-                "format": "binary",
-                "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                "download_detour": "direct"
-            },
-            {
-                "type": "remote",
-                "tag": "geoip-cn",
-                "format": "binary",
-                "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                "download_detour": "direct"
+        needed_rule_sets.insert("geoip-cn".into());
+        needed_rule_sets.insert("geosite-cn".into());
+    }
+
+    if !needed_rule_sets.is_empty() {
+        let mut sets = Vec::new();
+        let mut tags: Vec<String> = needed_rule_sets.into_iter().collect();
+        tags.sort();
+        for tag in tags {
+            if let Some(url) = rule_set_url(&tag) {
+                sets.push(json!({
+                    "type": "remote",
+                    "tag": tag,
+                    "format": "binary",
+                    "url": url,
+                    "download_detour": "direct"
+                }));
             }
-        ]);
+        }
+        if !sets.is_empty() {
+            route["rule_set"] = Value::Array(sets);
+        }
     }
 
     let clash_api = json!({
@@ -199,6 +206,207 @@ fn normalize_kind(kind: &str) -> &str {
         "ssh" => "ssh",
         // snell / ssr 等 Clash 专有协议在 sing-box 无对应实现，保持原名（核心将明确报错）。
         other => other,
+    }
+}
+
+/// 将内部 RouteRule 转为 sing-box 1.13 route.rules 条目。
+/// 返回 None 表示规则无效/空 payload，渲染时跳过。
+fn route_rule_to_json(r: &RouteRule) -> Option<Value> {
+    let outbound = r.outbound.trim();
+    if outbound.is_empty() {
+        return None;
+    }
+    let t = r.r#type.trim().to_ascii_lowercase();
+    let raw = r.payload.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // 兼容 payload 形如 "geosite:cn" / "geoip:cn" / "domain_suffix:example.com"
+    let (t, raw) = if let Some((head, rest)) = raw.split_once(':') {
+        let head = head.trim().to_ascii_lowercase();
+        match head.as_str() {
+            "geosite" | "geoip" | "domain" | "domain_suffix" | "domain_keyword"
+            | "domain_regex" | "ip_cidr" | "process_name" | "port" | "protocol" => {
+                (head, rest.trim().to_string())
+            }
+            _ => (t, raw.to_string()),
+        }
+    } else {
+        (t, raw.to_string())
+    };
+    if raw.is_empty() {
+        return None;
+    }
+
+    match t.as_str() {
+        "domain" | "domain_suffix" | "domain_keyword" | "domain_regex" => {
+            let host = normalize_host(&raw)?;
+            Some(json!({ t: [host], "outbound": outbound }))
+        }
+        "ip_cidr" | "ip" => {
+            // 单 IP 自动补 /32 或 /128
+            let cidr = normalize_ip_cidr(&raw)?;
+            Some(json!({ "ip_cidr": [cidr], "outbound": outbound }))
+        }
+        "port" => {
+            let ports = parse_ports(&raw)?;
+            Some(json!({ "port": ports, "outbound": outbound }))
+        }
+        "process_name" => Some(json!({ "process_name": [raw], "outbound": outbound })),
+        "protocol" => Some(json!({ "protocol": [raw], "outbound": outbound })),
+        "geosite" => {
+            // 内置 geosite 已移除，映射到远程 rule_set 标签
+            let tag = if raw == "cn" || raw == "geosite-cn" {
+                "geosite-cn".to_string()
+            } else {
+                format!("geosite-{raw}")
+            };
+            Some(json!({ "rule_set": tag, "outbound": outbound }))
+        }
+        "geoip" => {
+            let tag = if raw.eq_ignore_ascii_case("cn") || raw == "geoip-cn" {
+                "geoip-cn".to_string()
+            } else {
+                format!("geoip-{}", raw.to_ascii_lowercase())
+            };
+            Some(json!({ "rule_set": tag, "outbound": outbound }))
+        }
+        "rule_set" => Some(json!({ "rule_set": raw, "outbound": outbound })),
+        _ => None,
+    }
+}
+
+fn rule_set_tag_for(r: &RouteRule) -> Option<String> {
+    let t = r.r#type.trim().to_ascii_lowercase();
+    let raw = r.payload.trim();
+    let (t, raw) = if let Some((head, rest)) = raw.split_once(':') {
+        let head = head.trim().to_ascii_lowercase();
+        if matches!(head.as_str(), "geosite" | "geoip" | "rule_set") {
+            (head, rest.trim())
+        } else {
+            (t, raw)
+        }
+    } else {
+        (t, raw)
+    };
+    match t.as_str() {
+        "geosite" => Some(if raw == "cn" || raw == "geosite-cn" {
+            "geosite-cn".into()
+        } else {
+            format!("geosite-{raw}")
+        }),
+        "geoip" => Some(if raw.eq_ignore_ascii_case("cn") || raw == "geoip-cn" {
+            "geoip-cn".into()
+        } else {
+            format!("geoip-{}", raw.to_ascii_lowercase())
+        }),
+        "rule_set" => Some(raw.to_string()),
+        _ => None,
+    }
+}
+
+fn rule_set_url(tag: &str) -> Option<String> {
+    match tag {
+        "geosite-cn" => Some(
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+                .into(),
+        ),
+        "geoip-cn" => Some(
+            "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs".into(),
+        ),
+        _ => {
+            // 通用：geosite-xxx / geoip-xx
+            if let Some(rest) = tag.strip_prefix("geosite-") {
+                Some(format!(
+                    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{rest}.srs"
+                ))
+            } else if let Some(rest) = tag.strip_prefix("geoip-") {
+                Some(format!(
+                    "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{rest}.srs"
+                ))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// 规范化域名输入：去掉 scheme/path/port/空白。
+/// `https://ip.skk.moe/` → `ip.skk.moe`
+fn normalize_host(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let s = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .or_else(|| s.strip_prefix("HTTPS://"))
+        .or_else(|| s.strip_prefix("HTTP://"))
+        .unwrap_or(s);
+    // 去掉 path / query / fragment
+    let s = s.split(['/', '?', '#']).next().unwrap_or(s).trim();
+    // 去掉端口
+    let s = if s.starts_with('[') {
+        // [ipv6]:port
+        s
+    } else {
+        s.rsplit_once(':')
+            .and_then(|(h, p)| {
+                if p.chars().all(|c| c.is_ascii_digit()) {
+                    Some(h)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(s)
+    };
+    let s = s.trim().trim_end_matches('.').to_ascii_lowercase();
+    if s.is_empty() || s.contains(' ') {
+        return None;
+    }
+    Some(s)
+}
+
+fn normalize_ip_cidr(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains('/') {
+        return Some(s.to_string());
+    }
+    if s.contains(':') {
+        // IPv6 bare
+        Some(format!("{s}/128"))
+    } else {
+        Some(format!("{s}/32"))
+    }
+}
+
+fn parse_ports(raw: &str) -> Option<Vec<u16>> {
+    let mut out = Vec::new();
+    for part in raw.split([',', ' ', ';']) {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if let Some((a, b)) = p.split_once('-') {
+            let a: u16 = a.trim().parse().ok()?;
+            let b: u16 = b.trim().parse().ok()?;
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            for x in lo..=hi {
+                out.push(x);
+            }
+        } else {
+            out.push(p.parse().ok()?);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
     }
 }
 

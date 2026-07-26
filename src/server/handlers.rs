@@ -623,19 +623,94 @@ pub async fn add_rule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddRuleReq>,
 ) -> AppResult<Json<RouteRule>> {
+    let r#type = req.r#type.trim().to_string();
+    let payload = req.payload.trim().to_string();
+    let outbound = req.outbound.trim().to_string();
+    if r#type.is_empty() || payload.is_empty() || outbound.is_empty() {
+        return Err(AppError(anyhow::anyhow!(
+            "规则类型 / 匹配内容 / 出站不能为空"
+        )));
+    }
+    // 预检：能否渲染为合法 sing-box 规则（避免写入后核心 FATAL 全站挂掉）
+    let probe = crate::config::model::RouteRule {
+        id: "probe".into(),
+        name: req.name.clone(),
+        r#type: r#type.clone(),
+        payload: payload.clone(),
+        outbound: outbound.clone(),
+    };
+    // 通过 render 单测字段转换
+    let rendered = {
+        use crate::config::model::{AppProfile, ProxyMode};
+        let mut p = AppProfile::default();
+        p.mode = ProxyMode::Global;
+        p.rules.push(probe.clone());
+        // 用当前可见节点保证 outbound tag 存在于配置里（direct/block 始终有）
+        let vis = state.visible_profile().await;
+        p.nodes = vis.nodes;
+        p.selected_node = vis.selected_node;
+        let cfg = state.config.read().await.clone();
+        crate::config::render::render(&p, &cfg)
+    };
+    // 粗检：route.rules 里除 sniff/hijack 外至少多 1 条用户规则
+    let user_n = rendered
+        .get("route")
+        .and_then(|r| r.get("rules"))
+        .and_then(|a| a.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    if user_n <= 3 {
+        return Err(AppError(anyhow::anyhow!(
+            "无法识别的规则：type={} payload={}。域名请填 host（如 ip.skk.moe），不要写完整 URL 前缀以外无法解析的内容；或改用 domain_suffix。",
+            r#type,
+            payload
+        )));
+    }
+
     let rule = RouteRule {
         id: gen_id(),
-        name: req.name,
-        r#type: req.r#type,
-        payload: req.payload,
-        outbound: req.outbound,
+        name: if req.name.trim().is_empty() {
+            payload.clone()
+        } else {
+            req.name
+        },
+        r#type,
+        payload,
+        outbound,
     };
     {
         let mut p = state.profile.write().await;
         p.rules.push(rule.clone());
         crate::config::manager::save_profile(&state.data_dir, &p)?;
+        state.log(
+            "info",
+            format!(
+                "添加路由规则: [{}] {} → {}",
+                rule.r#type, rule.payload, rule.outbound
+            ),
+        );
     }
-    regen_config(&state).await;
+    // 规则错误会导致核心 FATAL，这里用严格 reload 并把错误返回前端
+    let cfg = state.config.read().await.clone();
+    let p = state.visible_profile().await;
+    if state.core.is_running().await {
+        if let Err(e) = state.core.reload(&p, &cfg).await {
+            // 回滚刚加的规则，避免配置一直坏
+            {
+                let mut pr = state.profile.write().await;
+                pr.rules.retain(|r| r.id != rule.id);
+                let _ = crate::config::manager::save_profile(&state.data_dir, &pr);
+            }
+            return Err(AppError(anyhow::anyhow!(
+                "规则已拒绝（核心重载失败）: {e}"
+            )));
+        }
+    } else if let Err(e) = state.core.write_config_only(&p, &cfg).await {
+        let mut pr = state.profile.write().await;
+        pr.rules.retain(|r| r.id != rule.id);
+        let _ = crate::config::manager::save_profile(&state.data_dir, &pr);
+        return Err(AppError(anyhow::anyhow!("写入配置失败: {e}")));
+    }
     state.broadcast_profile().await;
     Ok(Json(rule))
 }

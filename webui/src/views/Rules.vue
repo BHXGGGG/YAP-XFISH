@@ -62,12 +62,17 @@ async function del(id: string) {
 <template>
   <section>
     <h2>路由规则</h2>
+    <p class="hint" style="margin:8px 0 12px">
+      类型选「域名(精确)」时，填主机名即可，例如 <code>ip.skk.moe</code>；
+      粘贴 <code>https://ip.skk.moe/</code> 也会自动去掉协议和路径。
+      规则只影响匹配流量；不会改默认出站。若配置非法，核心会拒绝加载并提示错误。
+    </p>
     <div class="form">
       <input v-model="name" type="text" placeholder="名称（可选）" />
       <select v-model="type">
         <option v-for="[k, l] in types" :key="k" :value="k">{{ l }}</option>
       </select>
-      <input v-model="payload" type="text" placeholder="匹配内容，如 geosite:cn / domain_suffix:example.com / 192.168.0.0/16" style="min-width: 300px" />
+      <input v-model="payload" type="text" placeholder="匹配内容，如 ip.skk.moe / geosite:cn / 192.168.0.0/16（域名可写 URL，会自动提取主机名）" style="min-width: 300px" />
       <select v-model="outbound">
         <option value="direct">direct</option>
         <option value="block">block</option>
