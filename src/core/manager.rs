@@ -130,6 +130,30 @@ impl CoreManager {
         let child = self.spawn_captured(&binary).await?;
         *self.inner.child.lock().await = Some(child);
 
+        // 配置错误时 sing-box 会立刻 FATAL 退出（例如非法 DNS detour），
+        // 若这里仍返回 Ok，UI 会显示 running=true，但 9999/连接列表全挂。
+        // 等 400ms 探测一次：已退出则清 child 并返回错误。
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        {
+            let mut guard = self.inner.child.lock().await;
+            if let Some(c) = guard.as_mut() {
+                match c.try_wait() {
+                    Ok(Some(status)) => {
+                        *guard = None;
+                        return Err(anyhow::anyhow!(
+                            "sing-box 启动后立即退出（{status}）。请查看 data/logs/sing-box.log 与 yap-xfish.log 中的 FATAL 行。"
+                        )
+                        .into());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        *guard = None;
+                        return Err(anyhow::anyhow!("探测 sing-box 进程状态失败: {e}").into());
+                    }
+                }
+            }
+        }
+
         // gvisor 启动失败回退：若启用 TUN，且 sing-box 在 1.5s 内已死亡，
         // 重写 config.json 中 TUN 的 stack=system 并重启一次。
         if app_cfg.enable_tun {

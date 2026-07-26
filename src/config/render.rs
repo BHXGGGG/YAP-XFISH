@@ -115,21 +115,22 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         "dns": {
             // local 走直连 UDP（国内可达）；remote 为 DoH 备用。
             // TUN 下 DNS 被 hijack 后由本模块处理，不再进 VLESS。
+            // 注意：sing-box 1.13 禁止 DNS server detour 到「空」direct
+            // （FATAL: detour to an empty direct outbound makes no sense），
+            // 所以这里不要写 detour:"direct"。
             "servers": [
                 {
                     "type": "udp",
                     "tag": "local",
-                    "server": "223.5.5.5",
-                    "detour": "direct"
+                    "server": "223.5.5.5"
                 },
                 {
                     "type": "https",
                     "tag": "remote",
-                    "server": "1.1.1.1",
-                    "detour": "direct"
+                    "server": "1.1.1.1"
                 }
             ],
-            // TUN 场景优先 local，避免 DoH 被墙/超时拖垮全部建连。
+            // TUN 场景优先 local，避免 DoH 超时拖垮全部建连。
             "final": "local",
             "strategy": "prefer_ipv4",
             "independent_cache": true

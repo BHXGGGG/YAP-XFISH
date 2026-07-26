@@ -724,10 +724,11 @@ pub async fn list_connections(
     if !secret.is_empty() {
         req = req.header("Authorization", format!("Bearer {secret}"));
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| AppError(anyhow::anyhow!("连接列表请求失败: {e}")))?;
+    let resp = req.send().await.map_err(|e| {
+        AppError(anyhow::anyhow!(
+            "连接列表请求失败（Clash API 127.0.0.1:{port} 无响应，核心可能未在运行）: {e}"
+        ))
+    })?;
     if !resp.status().is_success() {
         return Err(AppError(anyhow::anyhow!(
             "连接列表 HTTP {}",
