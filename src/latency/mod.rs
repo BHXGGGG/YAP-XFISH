@@ -337,7 +337,7 @@ pub async fn test_one(state: &AppState, id: &str) -> AppResult<()> {
         (c.latency_test_url.clone(), c.latency_timeout)
     };
     let latency = measure(state, &node, &url, timeout).await;
-    write_back(state, id, latency).await;
+    write_back(state, id, latency, true).await;
     emit(state, id, latency);
     Ok(())
 }
@@ -390,7 +390,7 @@ pub async fn test_all(state: &AppState) -> AppResult<()> {
     let started = Instant::now();
     let mut results: Vec<(String, Option<u32>)> = Vec::new();
 
-    // 1) 协议节点：一个临时 core
+    // 1) 协议节点：一个临时 core；每完成一个立即 write_back + emit，前端逐个刷新
     if !protocol.is_empty() {
         if let Some(session) = UifProbeSession::start(state, &protocol).await {
             let session = Arc::new(session);
@@ -412,8 +412,10 @@ pub async fn test_all(state: &AppState) -> AppResult<()> {
                 });
             }
             while let Some(joined) = set.join_next().await {
-                if let Ok(pair) = joined {
-                    results.push(pair);
+                if let Ok((id, lat)) = joined {
+                    write_back(state, &id, lat, false).await;
+                    emit(state, &id, lat);
+                    results.push((id, lat));
                 }
             }
             // 拆 Arc 关停
@@ -421,19 +423,21 @@ pub async fn test_all(state: &AppState) -> AppResult<()> {
                 sess.shutdown().await;
             }
         } else {
-            // core 起不来：全部记失败
+            // core 起不来：全部记失败（仍逐个推送，前端能立刻看到“不可达”）
             state.log_with(
                 "latency",
                 "warn",
                 "UIF 临时 core 启动失败，协议节点测速全部标记不可达",
             );
             for n in protocol {
+                write_back(state, &n.id, None, false).await;
+                emit(state, &n.id, None);
                 results.push((n.id, None));
             }
         }
     }
 
-    // 2) 通用代理节点
+    // 2) 通用代理节点：同样测完一个推一个
     if !plain.is_empty() {
         let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let mut set = tokio::task::JoinSet::new();
@@ -451,27 +455,18 @@ pub async fn test_all(state: &AppState) -> AppResult<()> {
             });
         }
         while let Some(joined) = set.join_next().await {
-            if let Ok(pair) = joined {
-                results.push(pair);
+            if let Ok((id, lat)) = joined {
+                write_back(state, &id, lat, false).await;
+                emit(state, &id, lat);
+                results.push((id, lat));
             }
         }
     }
 
+    // 全部完成后统一落盘一次（过程中只改内存 + WS 推送，避免 50 次写盘）
     {
-        let mut p = state.profile.write().await;
-        for (id, lat) in &results {
-            if let Some(n) = p.nodes.iter_mut().find(|n| &n.id == id) {
-                n.latency = *lat;
-                n.latency_status = Some(match lat {
-                    Some(_) => "ok".to_string(),
-                    None => "timeout".to_string(),
-                });
-            }
-        }
+        let p = state.profile.read().await;
         let _ = crate::config::manager::save_profile(&state.data_dir, &p);
-    }
-    for (id, lat) in &results {
-        emit(state, id, *lat);
     }
     let ok = results.iter().filter(|(_, l)| l.is_some()).count();
     let failed = results.len() - ok;
@@ -488,7 +483,7 @@ pub async fn test_all(state: &AppState) -> AppResult<()> {
     Ok(())
 }
 
-async fn write_back(state: &AppState, id: &str, latency: Option<u32>) {
+async fn write_back(state: &AppState, id: &str, latency: Option<u32>, persist: bool) {
     let mut p = state.profile.write().await;
     if let Some(n) = p.nodes.iter_mut().find(|n| &n.id == id) {
         n.latency = latency;
@@ -497,7 +492,9 @@ async fn write_back(state: &AppState, id: &str, latency: Option<u32>) {
             None => "timeout".to_string(),
         });
     }
-    let _ = crate::config::manager::save_profile(&state.data_dir, &p);
+    if persist {
+        let _ = crate::config::manager::save_profile(&state.data_dir, &p);
+    }
 }
 
 fn emit(state: &AppState, id: &str, latency: Option<u32>) {
