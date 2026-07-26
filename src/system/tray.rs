@@ -163,6 +163,60 @@ fn run_tray(
     // Win32 消息泵：菜单点击与托盘点击都经此循环分发。
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
+        // 先排空 broadcast：网页端改 system_proxy/enable_tun 时不会触发
+        // Win32 消息，必须主动 poll 才能让托盘角标即时刷新。否则下一次
+        // GetMessageW 唤醒（用户鼠标移到托盘）才会刷新，看起来像「卡了」。
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                AppEvent::Status {
+                    running,
+                    current_node,
+                    ..
+                } => {
+                    // current_node 是 id，解析成 name 再显示
+                    let label = resolve_node_label(&state, current_node.as_ref());
+                    status_item.set_text(status_text(running, &label));
+                    let _ = tray.set_tooltip(Some(tooltip_text(running)));
+                }
+                AppEvent::Config {
+                    system_proxy,
+                    enable_tun,
+                } => {
+                    sysproxy_on = system_proxy;
+                    tun_on = enable_tun;
+                    sysproxy_item.set_checked(sysproxy_on);
+                    tun_item.set_checked(tun_on);
+                    // 系统代理 / TUN 状态点：右上紫点、左上黄点
+                    if let Err(e) = tray.set_icon(Some(make_icon(sysproxy_on, tun_on))) {
+                        eprintln!("[proxy] 刷新托盘图标失败: {e}");
+                    }
+                }
+                AppEvent::Profile { profile } => {
+                    // 选中节点变化时，Profile 也会推送；刷新顶部名称
+                    let label = profile
+                        .selected_node
+                        .as_ref()
+                        .and_then(|id| {
+                            profile
+                                .nodes
+                                .iter()
+                                .find(|n| &n.id == id)
+                                .map(|n| n.name.clone())
+                        });
+                    // 没有可用节点时不退回到 selected_node 字面量，否则托盘会显示
+                    // 一个"幽灵"节点名（profile 残留了 selected_node，但 nodes 已被清空）。
+                    // 保留当前 running 态（Profile 事件不带 running）
+                    let running = state
+                        .status
+                        .try_read()
+                        .map(|g| g.running)
+                        .unwrap_or(false);
+                    status_item.set_text(status_text(running, &label));
+                }
+                _ => {}
+            }
+        }
+
         let ret: BOOL = unsafe { GetMessageW(&mut msg, 0, 0, 0) };
         if ret == 0 {
             break; // 收到 WM_QUIT
@@ -236,58 +290,6 @@ fn run_tray(
                     ..
                 } => {
                     let _ = cmd_tx.send(AppCommand::OpenWebUI);
-                }
-                _ => {}
-            }
-        }
-
-        // 状态变化 → 刷新 tooltip 与状态项文字；配置变化 → 刷新勾选
-        while let Ok(ev) = rx.try_recv() {
-            match ev {
-                AppEvent::Status {
-                    running,
-                    current_node,
-                    ..
-                } => {
-                    // current_node 是 id，解析成 name 再显示
-                    let label = resolve_node_label(&state, current_node.as_ref());
-                    status_item.set_text(status_text(running, &label));
-                    let _ = tray.set_tooltip(Some(tooltip_text(running)));
-                }
-                AppEvent::Config {
-                    system_proxy,
-                    enable_tun,
-                } => {
-                    sysproxy_on = system_proxy;
-                    tun_on = enable_tun;
-                    sysproxy_item.set_checked(sysproxy_on);
-                    tun_item.set_checked(tun_on);
-                    // 系统代理 / TUN 状态点：右上紫点、左上黄点
-                    if let Err(e) = tray.set_icon(Some(make_icon(sysproxy_on, tun_on))) {
-                        eprintln!("[proxy] 刷新托盘图标失败: {e}");
-                    }
-                }
-                AppEvent::Profile { profile } => {
-                    // 选中节点变化时，Profile 也会推送；刷新顶部名称
-                    let label = profile
-                        .selected_node
-                        .as_ref()
-                        .and_then(|id| {
-                            profile
-                                .nodes
-                                .iter()
-                                .find(|n| &n.id == id)
-                                .map(|n| n.name.clone())
-                        });
-                    // 没有可用节点时不退回到 selected_node 字面量，否则托盘会显示
-                    // 一个"幽灵"节点名（profile 残留了 selected_node，但 nodes 已被清空）。
-                    // 保留当前 running 态（Profile 事件不带 running）
-                    let running = state
-                        .status
-                        .try_read()
-                        .map(|g| g.running)
-                        .unwrap_or(false);
-                    status_item.set_text(status_text(running, &label));
                 }
                 _ => {}
             }
