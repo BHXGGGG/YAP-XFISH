@@ -86,3 +86,53 @@ pub fn elevate_and_restart() -> bool {
         false
     }
 }
+
+/// 启动时检测到 TUN 已启用但未提权：弹窗询问用户是否以管理员身份重启。
+///
+/// - 用户点"是"且提权成功 → 当前进程 `exit(0)`，让新提权实例接管。
+/// - 用户点"否"或提权失败/取消 → 把 `enable_tun` 写回 `false` 持久化，下次启动不再触发。
+pub fn prompt_tun_elevate_or_disable(config_path: &std::path::Path) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_YESNO, MB_ICONWARNING, IDYES,
+    };
+
+    let msg = "TUN 模式需要管理员权限才能创建虚拟网卡。\n\n当前进程未以管理员身份运行，继续启动会导致 sing-box 启动失败（错误 59 / Access is denied）。\n\n是否以管理员身份重启？";
+    let title = "YAP-XFISH — 需要管理员权限";
+    let msg_wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+    let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let ret = unsafe {
+        MessageBoxW(
+            0,
+            msg_wide.as_ptr(),
+            title_wide.as_ptr(),
+            MB_YESNO | MB_ICONWARNING,
+        )
+    };
+
+    if ret == IDYES {
+        if elevate_and_restart() {
+            std::process::exit(0);
+        }
+        disable_tun_persisted(config_path);
+    } else {
+        disable_tun_persisted(config_path);
+    }
+}
+
+fn disable_tun_persisted(config_path: &std::path::Path) {
+    let text = match std::fs::read_to_string(config_path) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let mut cfg: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if cfg.get("enable_tun").and_then(|v| v.as_bool()).unwrap_or(false) {
+        cfg["enable_tun"] = serde_json::Value::Bool(false);
+        if let Ok(s) = serde_json::to_string_pretty(&cfg) {
+            let _ = std::fs::write(config_path, s);
+        }
+    }
+}

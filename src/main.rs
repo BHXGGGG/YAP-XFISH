@@ -42,10 +42,16 @@ async fn main() -> Result<()> {
     // 按配置应用开机启动（HKCU Run）。
     system::autostart::apply_autostart(state.config.read().await.autostart);
 
-    // 若启用 TUN 但未以管理员身份运行，sing-box 无法创建虚拟网卡，提前告警。
+    // 若启用 TUN 但未以管理员身份运行：弹窗让用户选择提权重启或关闭 TUN。
+    // 不再仅打日志——避免启动时静默失败，sing-box 报 "Access is denied" (错误 59)。
     if state.config.read().await.enable_tun && !crate::system::admin::is_elevated() {
-        eprintln!("[proxy] 警告：已启用 TUN，但当前未以管理员身份运行；sing-box 将无法创建虚拟网卡。");
-        state.log("warn", "已启用 TUN，但当前未以管理员身份运行。请通过托盘菜单「以管理员身份运行」重新启动以启用 TUN。");
+        let app_config_path = data_dir.join("app_config.json");
+        crate::system::admin::prompt_tun_elevate_or_disable(&app_config_path);
+        // 弹窗内已处理：
+        //  - 用户选提权并成功：当前进程已 exit(0)，不会回到这里；
+        //  - 提权失败/取消/选否：enable_tun 已被回滚为 false，函数返回。
+        // 此时 TUN 已关闭，强制刷新内存中的配置，避免继续走 TUN 启动路径。
+        state.config.write().await.enable_tun = false;
     }
 
     println!("[proxy] 数据目录: {}", data_dir.display());
