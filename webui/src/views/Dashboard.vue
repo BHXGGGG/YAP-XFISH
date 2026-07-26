@@ -28,9 +28,11 @@ function protocolMeta(kind: string) {
 }
 
 function fmtBytes(n: number): string {
-  if (!n || n < 0) return '0.00 MB'
+  if (!n || n < 0) return '0 B'
   if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
-  return (n / 1024 / 1024).toFixed(2) + ' MB'
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(2) + ' MB'
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
+  return n + ' B'
 }
 
 function fmtRate(bps: number): string {
