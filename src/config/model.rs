@@ -80,6 +80,10 @@ pub struct Node {
     pub latency_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_id: Option<String>,
+    /// 链式代理前置出站：值为另一节点的 `id`（渲染为 sing-box outbound.`detour`）。
+    /// `None`/空 = 直连拨号，不经前置。订阅更新时按稳定 id 尽量保留。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detour: Option<String>,
 }
 
 fn default_kind() -> String {

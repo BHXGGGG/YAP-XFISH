@@ -32,8 +32,10 @@ pub async fn measure(
     match node.kind.as_str() {
         "socks" | "socks5" | "http" | "https" => proxy_measure(node, test_url, timeout).await,
         _ => {
-            // 单节点场景：临时 core + 单 tag delay
-            let session = UifProbeSession::start(state, std::slice::from_ref(node)).await?;
+            // 单节点：临时 core 注入本节点 + detour 链上前置，测真实链路
+            let all = state.profile.read().await.nodes.clone();
+            let chain = render::collect_chain_nodes(&all, node);
+            let session = UifProbeSession::start(state, &chain).await?;
             let lat = session.delay(&node.id, test_url, timeout_ms).await;
             session.shutdown().await;
             lat
@@ -103,6 +105,7 @@ impl UifProbeSession {
         let mut outbounds: Vec<serde_json::Value> = nodes
             .iter()
             .map(|n| {
+                // 用带 detour 的渲染（目标也在本临时 core 的 nodes 列表中）
                 let mut ob = render::node_to_outbound(n);
                 if let Some(obj) = ob.as_object_mut() {
                     obj.insert("tag".into(), serde_json::json!(n.id));
@@ -391,8 +394,14 @@ pub async fn test_all(state: &AppState) -> AppResult<()> {
     let mut results: Vec<(String, Option<u32>)> = Vec::new();
 
     // 1) 协议节点：一个临时 core；每完成一个立即 write_back + emit，前端逐个刷新
+    //    注入列表需 expand detour 链，否则前置节点缺失时 delay 会失败/测的不是真链路
     if !protocol.is_empty() {
-        if let Some(session) = UifProbeSession::start(state, &protocol).await {
+        let all_nodes = {
+            let p = state.profile.read().await;
+            p.nodes.clone()
+        };
+        let session_nodes = render::expand_with_detours(&all_nodes, &protocol);
+        if let Some(session) = UifProbeSession::start(state, &session_nodes).await {
             let session = Arc::new(session);
             let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
             let mut set = tokio::task::JoinSet::new();

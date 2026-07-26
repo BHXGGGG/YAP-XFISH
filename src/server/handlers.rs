@@ -131,6 +131,80 @@ pub async fn select_node(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+#[derive(serde::Deserialize)]
+pub struct SetDetourReq {
+    /// 前置节点 id；空字符串或 null 表示清除链式代理。
+    pub detour: Option<String>,
+}
+
+/// 为节点设置链式前置代理（sing-box outbound.detour）。
+pub async fn set_node_detour(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SetDetourReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let detour_raw = req
+        .detour
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    {
+        let mut p = state.profile.write().await;
+        if !p.nodes.iter().any(|n| n.id == id) {
+            return Err(AppError(anyhow::anyhow!("节点不存在: {}", id)));
+        }
+        if let Some(ref d) = detour_raw {
+            if d == &id {
+                return Err(AppError(anyhow::anyhow!("前置代理不能是自身")));
+            }
+            if !p.nodes.iter().any(|n| &n.id == d) {
+                return Err(AppError(anyhow::anyhow!("前置节点不存在: {}", d)));
+            }
+            if !crate::config::render::detour_is_safe(&p.nodes, &id, d) {
+                return Err(AppError(anyhow::anyhow!(
+                    "设置该前置会形成代理环，已拒绝"
+                )));
+            }
+        }
+        let name = p
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.name.clone())
+            .unwrap_or_default();
+        if let Some(n) = p.nodes.iter_mut().find(|n| n.id == id) {
+            n.detour = detour_raw.clone();
+        }
+        crate::config::manager::save_profile(&state.data_dir, &p)?;
+        let detour_label = detour_raw
+            .as_ref()
+            .and_then(|d| {
+                p.nodes
+                    .iter()
+                    .find(|n| &n.id == d)
+                    .map(|n| format!("{} ({})", n.name, d))
+            })
+            .unwrap_or_else(|| "无".into());
+        state.log(
+            "info",
+            format!("设置链式代理: {} → 前置={}", name, detour_label),
+        );
+    }
+
+    state.broadcast_profile().await;
+    if state.core.is_running().await {
+        let p = state.visible_profile().await;
+        let cfg = state.config.read().await;
+        state.core.reload(&p, &cfg).await?;
+    }
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "id": id,
+        "detour": detour_raw,
+    })))
+}
+
 pub async fn set_mode(
     State(state): State<Arc<AppState>>,
     Json(mode): Json<ProxyMode>,

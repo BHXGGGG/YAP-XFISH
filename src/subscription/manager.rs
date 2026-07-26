@@ -172,11 +172,30 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
         None,
     );
 
-    // 5. 合并进 profile：先快照，再移除旧节点、追加新节点、保证选中有效
+    // 5. 合并进 profile：先快照，再移除旧节点、追加新节点、保证选中有效。
+    // 保留旧节点上的本地 detour（链式前置），避免订阅刷新冲掉用户配置的链路。
     let snapshot = {
         let mut p = state.profile.write().await;
         let snap = p.clone();
+        let old_detours: std::collections::HashMap<String, String> = p
+            .nodes
+            .iter()
+            .filter(|n| n.subscription_id.as_deref() == Some(id))
+            .filter_map(|n| {
+                n.detour
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(|d| (n.id.clone(), d))
+            })
+            .collect();
         p.nodes.retain(|n| n.subscription_id.as_deref() != Some(id));
+        for n in new_nodes.iter_mut() {
+            if let Some(d) = old_detours.get(&n.id) {
+                // 目标可能仍是本订阅内其它节点，或其它订阅/手动节点；存在性在 render 时再校验
+                n.detour = Some(d.clone());
+            }
+        }
         p.nodes.append(&mut new_nodes);
         ensure_selection(&mut p);
         if let Err(e) = cfgmgr::save_profile(&state.data_dir, &p) {

@@ -67,6 +67,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/profile/mode", post(handlers::set_mode))
         .route("/api/nodes/latency", post(handlers::test_all_latency))
         .route("/api/nodes/:id/latency", post(handlers::test_node_latency))
+        .route("/api/nodes/:id/detour", post(handlers::set_node_detour))
         .route("/api/subscriptions", get(handlers::list_subscriptions).post(handlers::add_subscription))
         .route("/api/subscriptions/update-all", post(handlers::update_all_subscriptions))
         .route("/api/subscriptions/:id", delete(handlers::delete_subscription).put(handlers::update_subscription_settings))

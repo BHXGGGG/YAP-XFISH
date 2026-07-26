@@ -40,6 +40,9 @@ export const api = {
   rulePresets: () => req('GET', '/api/rules/presets'),
   testNodeLatency: (id: string) => req('POST', '/api/nodes/' + id + '/latency'),
   testAllLatency: () => req('POST', '/api/nodes/latency'),
+  /** 设置节点链式前置代理；detour 为空字符串/null 表示清除 */
+  setNodeDetour: (id: string, detour: string | null) =>
+    req('POST', '/api/nodes/' + id + '/detour', { detour }),
   updateConfig: (c: any) => req('PUT', '/api/config', c),
   adminElevate: () => req('POST', '/api/admin/elevate'),
   memDebug: () => req('GET', '/api/debug/memory'),

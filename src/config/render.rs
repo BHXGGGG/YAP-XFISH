@@ -1,12 +1,13 @@
 use crate::app::AppConfig;
 use crate::config::model::{AppProfile, Node, ProxyMode};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// 将内部配置模型渲染为 sing-box 的 config.json（serde_json::Value）。
 pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     let mut outbounds = Vec::new();
     for node in &profile.nodes {
-        outbounds.push(node_to_outbound(node));
+        outbounds.push(node_to_outbound_in_profile(node, profile));
     }
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
@@ -203,8 +204,102 @@ fn normalize_kind(kind: &str) -> &str {
 
 /// 将内部 Node 转换为 sing-box outbound。覆盖常用协议，未知协议走 extra 透传。
 /// 公开给 latency（UIF 风格临时 core + Clash delay API）复用同一渲染逻辑。
+/// 不带 profile 时无法校验 detour 有效性，仅在 detour 非空时原样写入（测速侧应传入完整链）。
 pub fn node_to_outbound(node: &Node) -> Value {
-    let tag = &node.id;
+    let mut out = node_to_outbound_base(node);
+    if let Some(d) = node.detour.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if d != node.id {
+            out["detour"] = json!(d);
+        }
+    }
+    out
+}
+
+/// 带 profile 上下文：仅当 detour 目标存在且不构成环时才写入。
+pub fn node_to_outbound_in_profile(node: &Node, profile: &AppProfile) -> Value {
+    let mut out = node_to_outbound_base(node);
+    if let Some(d) = node.detour.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if detour_is_safe(&profile.nodes, &node.id, d) {
+            out["detour"] = json!(d);
+        }
+    }
+    out
+}
+
+/// 校验 detour：非空、非自环、目标存在、沿链不出现环（最多 32 跳）。
+pub fn detour_is_safe(nodes: &[Node], from_id: &str, detour: &str) -> bool {
+    let detour = detour.trim();
+    if detour.is_empty() || detour == from_id {
+        return false;
+    }
+    if !nodes.iter().any(|n| n.id == detour) {
+        return false;
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert(from_id.to_string());
+    let mut cur = detour.to_string();
+    for _ in 0..32 {
+        if !seen.insert(cur.clone()) {
+            return false; // 环
+        }
+        let next = nodes
+            .iter()
+            .find(|n| n.id == cur)
+            .and_then(|n| n.detour.as_ref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        match next {
+            Some(d) => cur = d,
+            None => return true,
+        }
+    }
+    false
+}
+
+/// 收集 `node` 及其 detour 链上的全部节点（用于测速临时 core 注入 outbound）。
+pub fn collect_chain_nodes<'a>(all: &'a [Node], node: &Node) -> Vec<Node> {
+    let mut out = vec![node.clone()];
+    let mut have: HashSet<String> = HashSet::from([node.id.clone()]);
+    let mut cur = node
+        .detour
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    for _ in 0..32 {
+        let Some(id) = cur else { break };
+        if !have.insert(id.clone()) {
+            break;
+        }
+        if let Some(n) = all.iter().find(|n| n.id == id) {
+            out.push(n.clone());
+            cur = n
+                .detour
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// 在 selected 基础上补齐所有被引用的 detour 节点（任意协议）。
+pub fn expand_with_detours(all: &[Node], selected: &[Node]) -> Vec<Node> {
+    let mut have: HashSet<String> = selected.iter().map(|n| n.id.clone()).collect();
+    let mut out: Vec<Node> = selected.to_vec();
+    for n in selected {
+        let chain = collect_chain_nodes(all, n);
+        for c in chain {
+            if have.insert(c.id.clone()) {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+fn node_to_outbound_base(node: &Node) -> Value {
     let mut out = match normalize_kind(&node.kind) {
         "shadowsocks" => json!({
             "type": "shadowsocks",
@@ -286,7 +381,7 @@ pub fn node_to_outbound(node: &Node) -> Value {
     };
 
     if let Value::Object(ref mut m) = out {
-        m.insert("tag".into(), json!(tag));
+        m.insert("tag".into(), json!(&node.id));
         // 合并 extra 透传字段。注意跳过 Clash 等非 sing-box 字段（如 `name`、`ws-opts`、
         // `cipher`、`tls`(布尔)、`sni`/`servername`、`network` 等），否则 sing-box 1.13 会因
         // `unknown field` 直接 FATAL 拒绝启动。解析阶段已把 Clash 订阅的 extra 置为 None，
