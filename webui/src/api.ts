@@ -43,4 +43,9 @@ export const api = {
   updateConfig: (c: any) => req('PUT', '/api/config', c),
   adminElevate: () => req('POST', '/api/admin/elevate'),
   memDebug: () => req('GET', '/api/debug/memory'),
+  version: () => req('GET', '/api/version'),
+  /** 连接明细：仅打开管理页时按需拉取，后台不常驻轮询 */
+  connections: () => req('GET', '/api/connections'),
+  /** 30 天每日流量（侧栏统计用） */
+  trafficDaily: () => req('GET', '/api/traffic/daily'),
 }

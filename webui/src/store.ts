@@ -10,6 +10,8 @@ export const store = reactive({
     current_node_name: null as string | null,
     traffic_up: 0,
     traffic_down: 0,
+    up_rate: 0,
+    down_rate: 0,
     node_count: 0,
     elevated: false,
     mem_mb: 0,
@@ -41,6 +43,7 @@ export const store = reactive({
   // 日志条目结构: { ts, level, source, message }；上限 500，超过自动丢弃最旧。
   logs: [] as { ts: number; level: string; source: string; message: string }[],
   toast: '' as string,
+  appVersion: '',
   // 订阅更新进度（由 WebSocket 的 subscription 事件实时写入）
   subProgress: {} as Record<string, { status: string; progress: number; message: string }>,
   // 日志过滤（'all' | 'info' | 'warn' | 'error'）

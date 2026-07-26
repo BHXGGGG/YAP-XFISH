@@ -18,6 +18,10 @@ pub struct StatusResp {
     pub current_node_name: Option<String>,
     pub traffic_up: u64,
     pub traffic_down: u64,
+    /// 上行瞬时速率 B/s（最近一拍；停止时为 0）。
+    pub up_rate: u64,
+    /// 下行瞬时速率 B/s。
+    pub down_rate: u64,
     pub node_count: usize,
     /// 当前进程是否以管理员身份运行（TUN 需要）。
     pub elevated: bool,
@@ -51,6 +55,8 @@ pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<Status
         current_node_name,
         traffic_up: st.traffic_up,
         traffic_down: st.traffic_down,
+        up_rate: st.up_rate,
+        down_rate: st.down_rate,
         node_count: state.visible_profile().await.nodes.len(),
         elevated: crate::system::admin::is_elevated(),
         mem_mb: (mem.working_set_bytes as f32) / (1024.0 * 1024.0),
@@ -182,7 +188,7 @@ pub async fn core_start(State(state): State<Arc<AppState>>) -> AppResult<Json<se
                 st.mode = p.mode;
                 st.current_node = p.selected_node.clone();
             }
-            state.reset_traffic().await;
+            // 上下行累计跨 start/stop/restart 保留（poller 按 core 增量累加）
             state.emit(AppEvent::Status {
                 running: true,
                 mode: p.mode,
@@ -217,6 +223,7 @@ pub async fn core_stop(State(state): State<Arc<AppState>>) -> AppResult<Json<ser
         });
     }
     state.log_with("core", "info", "sing-box 核心已停止");
+    crate::core::traffic_history::flush().await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -231,7 +238,7 @@ pub async fn core_restart(
         let mut st = state.status.write().await;
         st.running = true;
     }
-    state.reset_traffic().await;
+    // 上下行累计跨 restart 保留
     state.emit(AppEvent::Status {
         running: true,
         mode: p.mode,
@@ -655,6 +662,12 @@ pub async fn admin_elevate(
     if crate::system::admin::is_elevated() {
         return Ok(Json(serde_json::json!({ "ok": true, "already_elevated": true })));
     }
+    // 兜底：提权前把内存中的最新 config 同步落盘，确保新实例启动时读到用户
+    // 想要的状态（如 enable_tun=true）。即使前端守卫路径漏写盘也不影响。
+    {
+        let cfg = state.config.read().await;
+        let _ = crate::config::manager::save_app_config(&state.data_dir, &cfg);
+    }
     let ok = crate::system::admin::elevate_and_restart();
     if ok {
         // 提权实例已启动，本实例退出（让出单实例互斥锁已在内部完成）。
@@ -675,5 +688,81 @@ pub async fn mem_debug(
     Ok(Json(serde_json::json!({
         "working_set_mb": (m.working_set_bytes as f64) / (1024.0 * 1024.0),
         "private_mb": (m.private_bytes as f64) / (1024.0 * 1024.0),
+    })))
+}
+
+
+// ---------- 连接明细（按需；仅管理页打开时由前端轮询，后台不常驻） ----------
+
+/// 代理 sing-box Clash `GET /connections` 全量 JSON。
+/// 不在 traffic_poller 中解析连接列表，避免无人观看时浪费 CPU/内存。
+pub async fn list_connections(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<serde_json::Value>> {
+    let running = state.status.read().await.running;
+    if !running {
+        return Ok(Json(serde_json::json!({
+            "connections": [],
+            "downloadTotal": 0,
+            "uploadTotal": 0,
+            "memory": 0,
+        })));
+    }
+    let (port, secret) = {
+        let cfg = state.config.read().await;
+        (cfg.clash_api_port, cfg.api_secret.clone())
+    };
+    let url = format!("http://127.0.0.1:{port}/connections");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .no_proxy()
+        .build()
+        .map_err(|e| AppError(anyhow::anyhow!(e)))?;
+    let mut req = client.get(&url);
+    if !secret.is_empty() {
+        req = req.header("Authorization", format!("Bearer {secret}"));
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| AppError(anyhow::anyhow!("连接列表请求失败: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError(anyhow::anyhow!(
+            "连接列表 HTTP {}",
+            resp.status()
+        )));
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError(anyhow::anyhow!("连接列表解析失败: {e}")))?;
+    Ok(Json(v))
+}
+
+// ---------- 版本号 ----------
+
+/// 返回当前构建版本（从 Cargo.toml 编译期注入）。
+pub async fn get_version() -> AppResult<Json<serde_json::Value>> {
+    let version = env!("CARGO_PKG_VERSION");
+    Ok(Json(serde_json::json!({ "version": version })))
+}
+
+/// 流量历史：最近 N 天（默认 30）每日上行/下行。
+pub async fn traffic_daily(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<serde_json::Value>> {
+    // 每次都先 flush 当前累计，让今日数据新
+    crate::core::traffic_history::record_tick(&state).await;
+    let days = crate::core::traffic_history::last_n_days(
+        crate::core::traffic_history::DAILY_HISTORY_DAYS,
+    )
+    .await;
+    let (today, today_up, today_down) =
+        crate::core::traffic_history::snapshot_today().await;
+    Ok(Json(serde_json::json!({
+        "today": today,
+        "today_up": today_up,
+        "today_down": today_down,
+        "days": days,
     })))
 }

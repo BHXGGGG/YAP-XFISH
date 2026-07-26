@@ -129,6 +129,88 @@ impl CoreManager {
 
         let child = self.spawn_captured(&binary).await?;
         *self.inner.child.lock().await = Some(child);
+
+        // gvisor 启动失败回退：若启用 TUN，且 sing-box 在 1.5s 内已死亡，
+        // 重写 config.json 中 TUN 的 stack=system 并重启一次。
+        if app_cfg.enable_tun {
+            let event_tx = self.inner.event_tx.clone();
+            let child_arc = Arc::new(self.inner.clone());
+            let binary2 = binary.clone();
+            let config_path2 = self.inner.config_path.clone();
+            tokio::spawn(async move {
+                // 等待 1.5s 看子进程是否还活着
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                let alive = {
+                    let mut guard = child_arc.child.lock().await;
+                    if let Some(c) = guard.as_mut() {
+                        // try_wait 不会阻塞
+                        match c.try_wait() {
+                            Ok(Some(_status)) => false, // 已退出
+                            Ok(None) => true,           // 还活着
+                            Err(_) => true,              // 出错视为活着
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if alive {
+                    return; // 启动成功，无需回退
+                }
+                // 已退出：尝试重写 stack=system 重启一次
+                let _ = event_tx.send(AppEvent::Log {
+                    level: "warn".into(),
+                    source: "core".into(),
+                    message: "TUN gvisor 栈启动失败，尝试回退到 system 栈".to_string(),
+                });
+                if let Ok(text) = std::fs::read_to_string(&config_path2) {
+                    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(inbounds) =
+                            v.get_mut("inbounds").and_then(|x| x.as_array_mut())
+                        {
+                            for ib in inbounds.iter_mut() {
+                                if ib.get("type").and_then(|t| t.as_str())
+                                    == Some("tun")
+                                {
+                                    ib.as_object_mut().map(|m| {
+                                        m.insert("stack".into(),
+                                            serde_json::Value::String("system".into()));
+                                    });
+                                }
+                            }
+                        }
+                        if let Ok(s) = serde_json::to_string_pretty(&v) {
+                            let _ = std::fs::write(&config_path2, s);
+                        }
+                    }
+                }
+                // 重启
+                match process::spawn(&binary2, &config_path2).await {
+                    Ok(mut child2) => {
+                        if let Some(out) = child2.stdout.take() {
+                            spawn_log_reader(out, event_tx.clone());
+                        }
+                        if let Some(err) = child2.stderr.take() {
+                            spawn_log_reader(err, event_tx.clone());
+                        }
+                        // 替换 child
+                        let mut guard = child_arc.child.lock().await;
+                        *guard = Some(child2);
+                        let _ = event_tx.send(AppEvent::Log {
+                            level: "info".into(),
+                            source: "core".into(),
+                            message: "已用 system 栈重启".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(AppEvent::Log {
+                            level: "error".into(),
+                            source: "core".into(),
+                            message: format!("system 栈也启动失败: {e}"),
+                        });
+                    }
+                }
+            });
+        }
         Ok(())
     }
 

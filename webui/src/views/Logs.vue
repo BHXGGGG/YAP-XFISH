@@ -78,6 +78,16 @@ async function updateAllSubs() { await callAndRefresh('更新全部订阅', () =
 async function toggleConfigFlag(key: 'system_proxy' | 'enable_tun', value: boolean) {
   // TUN 开启且未提权 → 弹提权引导弹窗
   if (key === 'enable_tun' && value === true && !store.status.elevated) {
+    // 提权引导：先把 enable_tun=true 持久化（写盘不需要管理员权限）
+    // 这样提权后的新实例启动时会读到 enable_tun=true 并自动启用 TUN。
+    try {
+      const next = { ...store.config, [key]: value }
+      const updated = await api.updateConfig(next as any)
+      Object.assign(store.config, updated)
+    } catch (e: any) {
+      toast(e.message || '保存设置失败，请重试')
+      return
+    }
     showElevateDialog.value = true
     return
   }

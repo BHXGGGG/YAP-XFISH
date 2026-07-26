@@ -115,6 +115,10 @@ pub struct RuntimeStatus {
     pub current_node: Option<String>,
     pub traffic_up: u64,
     pub traffic_down: u64,
+    /// 最近一拍上行速率（B/s）；代理停止时为 0。
+    pub up_rate: u64,
+    /// 最近一拍下行速率（B/s）；代理停止时为 0。
+    pub down_rate: u64,
 }
 
 /// 通过 WebSocket 广播给所有已连接浏览器的事件。
@@ -129,6 +133,11 @@ pub enum AppEvent {
     Traffic {
         up: u64,
         down: u64,
+        /// B/s；旧客户端可忽略（serde default 0）
+        #[serde(default)]
+        up_rate: u64,
+        #[serde(default)]
+        down_rate: u64,
     },
     Log {
         level: String,
@@ -219,16 +228,6 @@ impl AppState {
         let _ = self.event_tx.send(ev);
     }
 
-    /// 清零会话上下行累计并广播（core start/stop/restart 调用）。
-    pub async fn reset_traffic(&self) {
-        {
-            let mut st = self.status.write().await;
-            st.traffic_up = 0;
-            st.traffic_down = 0;
-        }
-        self.emit(AppEvent::Traffic { up: 0, down: 0 });
-    }
-
     /// 便捷的日志广播：source 默认为 "app"。
     pub fn log(&self, level: &str, message: impl Into<String>) {
         self.log_with("app", level, message);
@@ -245,7 +244,15 @@ impl AppState {
 
     /// 广播最新配置模型（节点 / 选中节点 / 规则 / 模式），让前端实时刷新。
     /// 仅推送「启用订阅 + 手动节点」，停用订阅的节点不展示（其数据仍保留在持久化 profile 中）。
-    pub async fn broadcast_profile(&self) {
+    
+    pub async fn reset_traffic(&self) {
+        let mut st = self.status.write().await;
+        st.traffic_up = 0;
+        st.traffic_down = 0;
+        st.up_rate = 0;
+        st.down_rate = 0;
+    }
+pub async fn broadcast_profile(&self) {
         let p = self.visible_profile().await;
         self.emit(AppEvent::Profile { profile: p });
     }

@@ -23,8 +23,9 @@ body {
   width: 200px; background: var(--panel); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; padding: 16px 12px;
 }
-.brand { font-size: 18px; font-weight: 700; margin-bottom: 18px; padding-left: 6px; }
+.brand { font-size: 18px; font-weight: 700; margin-bottom: 18px; padding-left: 6px; display: flex; align-items: baseline; }
 .brand span { color: var(--primary); }
+.brand .version { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 6px; }
 .side nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .side nav button {
   display: flex; align-items: center; gap: 10px; text-align: left;

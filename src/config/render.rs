@@ -31,8 +31,14 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         })
         .collect();
 
-    // sing-box 1.13：inbound 上的 sniff 字段已移除，改用 route 规则动作 `sniff`（放在最前）
-    let mut all_rules: Vec<Value> = vec![json!({ "action": "sniff" })];
+    // sing-box 1.13：inbound 上的 sniff 字段已移除，改用 route 规则动作 `sniff`。
+    // TUN 下的 DNS 请求会到 fake DNS 地址（如 172.19.0.2:53）；必须先 hijack
+    // 到 sing-box DNS 模块，否则 Global 模式会把 DNS 包当普通流量送进代理节点，
+    // 导致每次域名解析都绕一遍 Trojan，TUN 比系统代理明显变慢。
+    let mut all_rules: Vec<Value> = vec![
+        json!({ "protocol": "dns", "action": "hijack-dns" }),
+        json!({ "action": "sniff" }),
+    ];
     all_rules.extend(rules);
 
     let mut route = json!({
@@ -100,6 +106,9 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     });
 
     if cfg.enable_tun {
+        // 默认用 gvisor 用户态 TCP/IP 栈：性能远好于 Windows 系统栈，
+        // 避免 TUN 模式下"流量绕一圈"导致的明显变慢。
+        // auto_route=true 让 sing-box 接管 0.0.0.0/0 出站流量。
         config["inbounds"]
             .as_array_mut()
             .unwrap()
@@ -108,7 +117,7 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
                 "tag": "tun-in",
                 "address": ["172.19.0.1/30"],
                 "auto_route": true,
-                "stack": "system"
+                "stack": "gvisor"
             }));
     }
 

@@ -77,6 +77,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/config", axum::routing::put(handlers::update_config))
         .route("/api/admin/elevate", post(handlers::admin_elevate))
         .route("/api/debug/memory", get(handlers::mem_debug))
+        .route("/api/connections", get(handlers::list_connections))
+        .route("/api/version", get(handlers::get_version))
+        .route("/api/traffic/daily", get(handlers::traffic_daily))
         .route("/api/ws", get(ws::ws_handler))
         // fallback 必须在 with_state 之前：先有 Router<()> 再注入 state。
         .fallback(static_files::static_handler)

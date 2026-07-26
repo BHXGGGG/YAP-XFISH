@@ -8,8 +8,16 @@ const form = reactive({ ...store.config })
 watch(() => store.config, (c) => Object.assign(form, c), { deep: true })
 
 async function save() {
-  // TUN 从关→开 且 未提权 → 弹提权引导
+  // TUN 从关→开 且 未提权 → 先持久化 enable_tun=true，再弹提权引导。
+  // 写盘不需要管理员权限；提权后的新实例读到 enable_tun=true 即可自动启用 TUN。
   if (form.enable_tun && !store.config.enable_tun && !store.status.elevated) {
+    try {
+      const updated = await api.updateConfig({ ...form, enable_tun: true })
+      Object.assign(store.config, updated)
+    } catch (e: any) {
+      toast(e.message || '保存设置失败，请重试')
+      return
+    }
     showElevateDialog.value = true
     return
   }

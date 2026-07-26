@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
 import Modal from '../components/Modal.vue'
@@ -32,6 +32,118 @@ function fmtBytes(n: number): string {
   if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
   return (n / 1024 / 1024).toFixed(2) + ' MB'
 }
+
+function fmtRate(bps: number): string {
+  if (!bps || bps < 0) return '0 B/s'
+  if (bps >= 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' MB/s'
+  if (bps >= 1024) return (bps / 1024).toFixed(1) + ' KB/s'
+  return Math.round(bps) + ' B/s'
+}
+
+/* ---------- 速度迷你图（纯前端；组件卸载即停，关管理页不占后端） ---------- */
+const RATE_HIST = 48
+const rateUpHist = ref<number[]>(Array(RATE_HIST).fill(0))
+const rateDownHist = ref<number[]>(Array(RATE_HIST).fill(0))
+let rateWatchStop: (() => void) | null = null
+
+function pushRate(up: number, down: number) {
+  const u = rateUpHist.value.slice(1)
+  u.push(up || 0)
+  rateUpHist.value = u
+  const d = rateDownHist.value.slice(1)
+  d.push(down || 0)
+  rateDownHist.value = d
+}
+
+const rateChartUp = computed(() => sparkPath(rateUpHist.value))
+const rateChartDown = computed(() => sparkPath(rateDownHist.value))
+
+function sparkPath(arr: number[]): string {
+  const w = 240
+  const h = 40
+  const max = Math.max(1, ...arr)
+  return arr
+    .map((v, i) => {
+      const x = (i / Math.max(1, arr.length - 1)) * w
+      const y = h - (v / max) * (h - 2) - 1
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
+}
+
+/* ---------- 连接明细（仅展开时 2s 拉一次；收起/离页即停） ---------- */
+const showConnections = ref(false)
+const connLoading = ref(false)
+const connections = ref<any[]>([])
+const connMeta = ref({ uploadTotal: 0, downloadTotal: 0, memory: 0 })
+let connTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshConnections() {
+  if (!showConnections.value) return
+  connLoading.value = true
+  try {
+    const data: any = await api.connections()
+    connections.value = Array.isArray(data?.connections) ? data.connections : []
+    connMeta.value = {
+      uploadTotal: data?.uploadTotal || 0,
+      downloadTotal: data?.downloadTotal || 0,
+      memory: data?.memory || 0,
+    }
+  } catch (e: any) {
+    toast(e.message || '连接列表失败')
+  } finally {
+    connLoading.value = false
+  }
+}
+
+function startConnPoll() {
+  stopConnPoll()
+  refreshConnections()
+  connTimer = setInterval(refreshConnections, 2000)
+}
+function stopConnPoll() {
+  if (connTimer) {
+    clearInterval(connTimer)
+    connTimer = null
+  }
+}
+
+function toggleConnections() {
+  showConnections.value = !showConnections.value
+  if (showConnections.value) startConnPoll()
+  else {
+    stopConnPoll()
+    connections.value = []
+  }
+}
+
+function connHost(c: any): string {
+  const meta = c?.metadata || {}
+  return meta.host || meta.destinationIP || meta.remoteDestination || '—'
+}
+function connRule(c: any): string {
+  return c?.rule || c?.rulePayload || '—'
+}
+function connChains(c: any): string {
+  const ch = c?.chains
+  if (Array.isArray(ch) && ch.length) return ch.join(' → ')
+  return c?.outbound || '—'
+}
+
+onMounted(() => {
+  // 仅仪表盘挂载时跟踪速率历史（离开仪表盘卸载则停止）
+  rateWatchStop = watch(
+    () => [store.status.up_rate, store.status.down_rate] as const,
+    ([u, d]) => pushRate(Number(u) || 0, Number(d) || 0),
+  )
+})
+onBeforeUnmount(() => {
+  if (rateWatchStop) {
+    rateWatchStop()
+    rateWatchStop = null
+  }
+  stopConnPoll()
+})
 
 const visibleNodes = computed(() => {
   const enabled = new Set(
@@ -118,6 +230,17 @@ const statusKind = computed(() => (store.status.running ? 'on' : 'off'))
 async function toggleConfigFlag(key: 'system_proxy' | 'enable_tun', value: boolean) {
   // TUN 开启且未提权 → 弹提权引导弹窗
   if (key === 'enable_tun' && value === true && !store.status.elevated) {
+    // 提权引导：先把 enable_tun=true 持久化（写盘不需要管理员权限）
+    // 这样提权后的新实例启动时会读到 enable_tun=true 并自动启用 TUN，
+    // 避免"提权后还要再回来手动开一次"。
+    try {
+      const next = { ...store.config, [key]: value }
+      const updated = await api.updateConfig(next as any)
+      Object.assign(store.config, updated)
+    } catch (e: any) {
+      toast(e.message || '保存设置失败，请重试')
+      return
+    }
     showElevateDialog.value = true
     return
   }
@@ -231,12 +354,60 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
       <div class="card"><div class="k">节点数</div><div class="v">{{ store.status.node_count }}</div></div>
       <div class="card"><div class="k">上行</div><div class="v">{{ fmtBytes(store.status.traffic_up) }}</div></div>
       <div class="card"><div class="k">下行</div><div class="v">{{ fmtBytes(store.status.traffic_down) }}</div></div>
+      <div class="card"><div class="k">总计</div><div class="v">{{ fmtBytes((store.status.traffic_up || 0) + (store.status.traffic_down || 0)) }}</div></div>
+      <div class="card rate-card">
+        <div class="k">实时速度</div>
+        <div class="v rate-line">
+          <span class="up">↑ {{ fmtRate(store.status.up_rate) }}</span>
+          <span class="down">↓ {{ fmtRate(store.status.down_rate) }}</span>
+        </div>
+        <svg class="rate-spark" viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true">
+          <path :d="rateChartUp" stroke="#16a34a" stroke-width="1.5" fill="none" />
+          <path :d="rateChartDown" stroke="#2563eb" stroke-width="1.5" fill="none" />
+        </svg>
+      </div>
     </div>
 
     <div class="actions">
       <button class="primary" :disabled="store.status.running" @click="start">启动代理</button>
       <button :disabled="!store.status.running" @click="stop">停止</button>
       <button @click="restart">重启</button>
+      <button @click="toggleConnections" :class="{ active: showConnections }">
+        {{ showConnections ? '隐藏连接' : '显示连接' }}
+      </button>
+    </div>
+
+    <div v-if="showConnections" class="conn-panel">
+      <div class="conn-head">
+        <span>活动连接（每 2s 刷新）</span>
+        <span class="conn-meta">
+          ↑ {{ fmtBytes(connMeta.uploadTotal) }} · ↓ {{ fmtBytes(connMeta.downloadTotal) }} · mem {{ Math.round((connMeta.memory || 0) / 1024 / 1024) }} MB
+          <span v-if="connLoading" class="conn-loading">· 刷新中…</span>
+        </span>
+      </div>
+      <div v-if="!connections.length" class="empty">暂无活动连接。</div>
+      <div v-else class="conn-table-wrap">
+        <table class="conn-table">
+          <thead>
+            <tr>
+              <th>主机</th>
+              <th>网络</th>
+              <th>规则</th>
+              <th>链路</th>
+              <th>↑/↓ 字节</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(c, i) in connections" :key="i">
+              <td class="mono">{{ connHost(c) }}</td>
+              <td>{{ c?.metadata?.network || c?.metadata?.type || '—' }}</td>
+              <td class="mono">{{ connRule(c) }}</td>
+              <td class="mono">{{ connChains(c) }}</td>
+              <td class="mono">↑{{ c?.upload ?? 0 }} / ↓{{ c?.download ?? 0 }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- 节点区：标题 + 搜索框 + 两按钮 同一行 -->
@@ -491,4 +662,36 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
   border-radius: 8px; font-weight: 600;
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
 }
+
+/* 实时速度卡：双线 + 迷你图 */
+.rate-card { grid-column: span 2; min-width: 0; }
+.rate-line { display: flex; gap: 14px; font-weight: 600; }
+.rate-line .up   { color: #16a34a; }
+.rate-line .down { color: #2563eb; }
+.rate-spark { width: 100%; height: 40px; margin-top: 6px; display: block; }
+@media (max-width: 900px) { .rate-card { grid-column: span 1; } }
+
+/* 连接明细面板 */
+.conn-panel {
+  margin-top: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.conn-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px; color: #374151; margin-bottom: 8px;
+}
+.conn-meta { color: #6b7280; font-size: 12px; }
+.conn-loading { color: #2563eb; }
+.conn-table-wrap { overflow: auto; max-height: 360px; border-top: 1px solid var(--border); }
+.conn-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.conn-table th, .conn-table td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border);
+  text-align: left; white-space: nowrap;
+}
+.conn-table th { background: #f9fafb; position: sticky; top: 0; }
+.conn-table .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.actions button.active { background: #1f2937; color: #fff; border-color: #1f2937; }
 </style>
