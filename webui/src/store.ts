@@ -37,6 +37,8 @@ export const store = reactive({
     latency_test_url: 'https://www.gstatic.com/generate_204',
     latency_concurrency: 50,
     latency_timeout: 5000,
+    tun_stack: 'mixed',
+    tun_mtu: 9000,
   },
   subscriptions: [] as any[],
   rules: [] as any[],

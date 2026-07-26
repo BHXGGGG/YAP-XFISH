@@ -35,9 +35,14 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     // TUN 下的 DNS 请求会到 fake DNS 地址（如 172.19.0.2:53）；必须先 hijack
     // 到 sing-box DNS 模块，否则 Global 模式会把 DNS 包当普通流量送进代理节点，
     // 导致每次域名解析都绕一遍 Trojan，TUN 比系统代理明显变慢。
+    // sniff 带短 timeout + 限定 sniffer：全局无超时 sniff 在高 PPS 时会显著拖吞吐。
     let mut all_rules: Vec<Value> = vec![
         json!({ "protocol": "dns", "action": "hijack-dns" }),
-        json!({ "action": "sniff" }),
+        json!({
+            "action": "sniff",
+            "timeout": "100ms",
+            "sniffer": ["http", "tls", "quic", "dns"]
+        }),
     ];
     all_rules.extend(rules);
 
@@ -90,7 +95,9 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
                 { "type": "udp", "tag": "local", "server": "223.5.5.5" }
             ],
             "final": "remote",
-            "strategy": "prefer_ipv4"
+            "strategy": "prefer_ipv4",
+            // 独立缓存，减少 TUN 下重复解析对建连延迟的放大。
+            "independent_cache": true
         },
         "inbounds": [
             {
@@ -106,9 +113,22 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     });
 
     if cfg.enable_tun {
-        // 默认用 gvisor 用户态 TCP/IP 栈：性能远好于 Windows 系统栈，
-        // 避免 TUN 模式下"流量绕一圈"导致的明显变慢。
-        // auto_route=true 让 sing-box 接管 0.0.0.0/0 出站流量。
+        // TUN 吞吐优化（相对旧默认纯 gvisor）：
+        // - stack=mixed（可配置）：TCP 走系统栈，UDP 走 gvisor，大吞吐通常远好于纯 gvisor
+        // - mtu=9000（可配置）：减少分片与系统调用次数
+        // - endpoint_independent_nat：UDP 游戏/QUIC 更稳
+        // - auto_route=true：接管默认路由
+        // gvisor 启动失败时 core/manager 仍会回退写 stack=system 再启一次。
+        let stack = match cfg.tun_stack.trim().to_ascii_lowercase().as_str() {
+            "gvisor" => "gvisor",
+            "system" => "system",
+            _ => "mixed",
+        };
+        let mtu = if cfg.tun_mtu >= 1280 && cfg.tun_mtu <= 65535 {
+            cfg.tun_mtu
+        } else {
+            9000
+        };
         config["inbounds"]
             .as_array_mut()
             .unwrap()
@@ -116,8 +136,11 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
                 "type": "tun",
                 "tag": "tun-in",
                 "address": ["172.19.0.1/30"],
+                "mtu": mtu,
                 "auto_route": true,
-                "stack": "gvisor"
+                "strict_route": true,
+                "stack": stack,
+                "endpoint_independent_nat": true
             }));
     }
 

@@ -78,6 +78,20 @@ function onElevateCancel() {
         <code>127.0.0.1:{{ form.proxy_port }}</code>。关闭程序或取消勾选会自动还原。
         TUN 与系统代理可同时开启，但一般二选一即可。
       </p>
+
+      <h3 style="margin-top:8px">TUN 性能</h3>
+      <label>协议栈
+        <select v-model="form.tun_stack">
+          <option value="mixed">mixed（推荐：TCP 系统栈，吞吐通常最好）</option>
+          <option value="system">system（纯系统栈）</option>
+          <option value="gvisor">gvisor（纯用户态，兼容性好但大吞吐可能很慢）</option>
+        </select>
+      </label>
+      <label>MTU<input v-model.number="form.tun_mtu" type="number" min="1280" max="65535" step="1" /></label>
+      <p class="hint">
+        若 TUN 比系统代理慢一个数量级，优先把栈改成 <code>mixed</code> 或 <code>system</code>，
+        MTU 可先用 <code>9000</code>；个别网络异常再试 <code>1500</code>。保存后会重建核心配置。
+      </p>
     </div>
 
     <h3 style="margin-top:24px">延迟测试</h3>

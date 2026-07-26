@@ -46,6 +46,13 @@ pub struct AppConfig {
     /// 延迟测试：单次超时（毫秒）。
     #[serde(default = "default_latency_timeout")]
     pub latency_timeout: u64,
+    /// TUN 协议栈：`mixed`（推荐，TCP 走系统栈）/ `gvisor` / `system`。
+    /// 旧配置缺省时为 mixed，避免 gvisor 用户态 TCP 把吞吐压到几 Mbps。
+    #[serde(default = "default_tun_stack")]
+    pub tun_stack: String,
+    /// TUN MTU。Windows + Wintun 下 9000 通常比 1500 更利于大吞吐；过小易分片。
+    #[serde(default = "default_tun_mtu")]
+    pub tun_mtu: u32,
 }
 
 impl Default for AppConfig {
@@ -66,6 +73,8 @@ impl Default for AppConfig {
             latency_test_url: default_latency_url(),
             latency_concurrency: default_latency_concurrency(),
             latency_timeout: default_latency_timeout(),
+            tun_stack: default_tun_stack(),
+            tun_mtu: default_tun_mtu(),
         }
     }
 }
@@ -96,6 +105,15 @@ fn default_latency_concurrency() -> usize {
 
 fn default_latency_timeout() -> u64 {
     5000
+}
+
+fn default_tun_stack() -> String {
+    // mixed：TCP 走 system、UDP 走 gvisor，Windows 上大文件/测速通常远好于纯 gvisor。
+    "mixed".into()
+}
+
+fn default_tun_mtu() -> u32 {
+    9000
 }
 
 fn random_secret() -> String {

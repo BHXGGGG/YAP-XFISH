@@ -581,8 +581,10 @@ pub async fn update_config(
     state.log(
         "info",
         format!(
-            "保存设置: TUN={} 系统代理={} 自启={} 代理端口={} Web端口={} ClashAPI端口={}",
+            "保存设置: TUN={} stack={} mtu={} 系统代理={} 自启={} 代理端口={} Web端口={} ClashAPI端口={}",
             cfg.enable_tun,
+            cfg.tun_stack,
+            cfg.tun_mtu,
             cfg.system_proxy,
             cfg.autostart,
             cfg.proxy_port,
