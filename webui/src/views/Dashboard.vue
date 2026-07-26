@@ -212,31 +212,6 @@ async function testOne(id: string, ev?: Event) {
   try { await api.testNodeLatency(id) } catch (e: any) { toast(e.message) }
 }
 
-async function setDetour(id: string, detour: string, ev?: Event) {
-  if (ev) ev.stopPropagation()
-  const value = detour && detour.trim() ? detour.trim() : null
-  try {
-    await api.setNodeDetour(id, value)
-    // 乐观更新本地；后端会 broadcast_profile 再对齐
-    const n = store.profile.nodes.find((x: any) => x.id === id)
-    if (n) n.detour = value
-    toast(value ? '已设置前置代理' : '已清除前置代理')
-  } catch (e: any) {
-    toast(e.message || '设置失败')
-  }
-}
-
-function detourName(id: string | null | undefined): string {
-  if (!id) return ''
-  const n = store.profile.nodes.find((x: any) => x.id === id)
-  return n?.name || id
-}
-
-/** 可选前置列表：排除自身，避免简单自环（更深环由后端校验） */
-function detourOptions(selfId: string) {
-  return visibleNodes.value.filter((n: any) => n.id !== selfId)
-}
-
 const emit = defineEmits<{ (e: 'navigate', tab: string): void }>()
 
 async function start()   { try { await api.coreStart()   } catch (e: any) { toast(e.message) } }
@@ -499,23 +474,6 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
           <span v-else-if="n.latency_status === 'timeout'" class="meta-timeout">不可达</span>
           <span v-else class="meta-untested">未测速</span>
         </div>
-        <div class="card-detour" @click.stop>
-          <label class="detour-label" :title="n.detour ? ('前置: ' + detourName(n.detour)) : '无前置代理'">
-            <span class="detour-k">链</span>
-            <select
-              class="detour-select"
-              :value="n.detour || ''"
-              @change="setDetour(n.id, ($event.target as HTMLSelectElement).value, $event)"
-            >
-              <option value="">无前置</option>
-              <option
-                v-for="opt in detourOptions(n.id)"
-                :key="opt.id"
-                :value="opt.id"
-              >{{ opt.name }}</option>
-            </select>
-          </label>
-        </div>
       </div>
     </div>
 
@@ -652,35 +610,6 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 }
 .card-server { font-size: 11px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-latency { font-size: 12px; min-height: 18px; }
-.card-detour { margin-top: 6px; }
-.detour-label {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; color: var(--muted); cursor: default;
-}
-.detour-k {
-  flex: 0 0 auto;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: #f3f4f6;
-  color: #6b7280;
-  font-weight: 700;
-  font-size: 10px;
-}
-.detour-select {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  font-size: 11px;
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: #fff;
-  color: var(--text);
-}
-.detour-select:focus {
-  outline: none;
-  border-color: #93c5fd;
-}
 
 .icon-btn {
   flex-shrink: 0; width: 28px; height: 28px; padding: 0;

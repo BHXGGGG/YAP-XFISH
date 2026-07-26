@@ -6,6 +6,7 @@ import { connectWs } from './ws'
 import Dashboard from './views/Dashboard.vue'
 import Subscriptions from './views/Subscriptions.vue'
 import Rules from './views/Rules.vue'
+import Chain from './views/Chain.vue'
 import Settings from './views/Settings.vue'
 import Logs from './views/Logs.vue'
 
@@ -13,10 +14,18 @@ const tabs = [
   { key: 'dashboard', label: '仪表盘', icon: '▦' },
   { key: 'subscriptions', label: '订阅', icon: '↻' },
   { key: 'rules', label: '规则', icon: '⚑' },
+  { key: 'chain', label: '链式代理', icon: '⇄' },
   { key: 'settings', label: '设置', icon: '⚙' },
   { key: 'logs', label: '日志', icon: '☰' },
 ]
-const views: Record<string, any> = { dashboard: Dashboard, subscriptions: Subscriptions, rules: Rules, settings: Settings, logs: Logs }
+const views: Record<string, any> = {
+  dashboard: Dashboard,
+  subscriptions: Subscriptions,
+  rules: Rules,
+  chain: Chain,
+  settings: Settings,
+  logs: Logs,
+}
 const active = ref('dashboard')
 
 // 右上角绿色指示：系统代理 / TUN 启用时显示

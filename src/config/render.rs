@@ -215,15 +215,23 @@ pub fn node_to_outbound(node: &Node) -> Value {
     out
 }
 
-/// 带 profile 上下文：仅当 detour 目标存在且不构成环时才写入。
+/// 带 profile 上下文：仅当 detour 目标存在、不构成环、且出口协议支持链式时才写入。
 pub fn node_to_outbound_in_profile(node: &Node, profile: &AppProfile) -> Value {
     let mut out = node_to_outbound_base(node);
     if let Some(d) = node.detour.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        if detour_is_safe(&profile.nodes, &node.id, d) {
+        if detour_is_safe(&profile.nodes, &node.id, d) && detour_protocol_ok(node) {
             out["detour"] = json!(d);
         }
     }
     out
+}
+
+/// UDP/QUIC 类出口经 detour 拨号极易超时，渲染时直接忽略其 detour。
+pub fn detour_protocol_ok(exit: &Node) -> bool {
+    !matches!(
+        exit.kind.to_ascii_lowercase().as_str(),
+        "hysteria" | "hysteria2" | "hy2" | "tuic" | "wireguard" | "wg"
+    )
 }
 
 /// 校验 detour：非空、非自环、目标存在、沿链不出现环（最多 32 跳）。

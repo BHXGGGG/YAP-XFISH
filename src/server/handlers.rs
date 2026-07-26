@@ -151,28 +151,46 @@ pub async fn set_node_detour(
 
     {
         let mut p = state.profile.write().await;
-        if !p.nodes.iter().any(|n| n.id == id) {
-            return Err(AppError(anyhow::anyhow!("节点不存在: {}", id)));
-        }
+        let exit = p
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .cloned()
+            .ok_or_else(|| AppError(anyhow::anyhow!("节点不存在: {}", id)))?;
+
         if let Some(ref d) = detour_raw {
             if d == &id {
                 return Err(AppError(anyhow::anyhow!("前置代理不能是自身")));
             }
-            if !p.nodes.iter().any(|n| &n.id == d) {
-                return Err(AppError(anyhow::anyhow!("前置节点不存在: {}", d)));
+            let entry = p
+                .nodes
+                .iter()
+                .find(|n| &n.id == d)
+                .ok_or_else(|| AppError(anyhow::anyhow!("前置节点不存在: {}", d)))?;
+
+            // UDP/QUIC 出口经 detour 拨号在多数前置上会直接超时（实测 hy2 链式）。
+            let exit_k = exit.kind.to_ascii_lowercase();
+            if matches!(
+                exit_k.as_str(),
+                "hysteria" | "hysteria2" | "hy2" | "tuic" | "wireguard" | "wg"
+            ) {
+                return Err(AppError(anyhow::anyhow!(
+                    "出口「{}」是 {}（UDP/QUIC），无法经前置链式拨号。请换 VLESS/VMess/Trojan/SS 等 TCP 出口，或不要给该节点设前置。",
+                    exit.name,
+                    exit.kind
+                )));
             }
+
             if !crate::config::render::detour_is_safe(&p.nodes, &id, d) {
                 return Err(AppError(anyhow::anyhow!(
                     "设置该前置会形成代理环，已拒绝"
                 )));
             }
+
+            let _ = entry; // 已校验存在
         }
-        let name = p
-            .nodes
-            .iter()
-            .find(|n| n.id == id)
-            .map(|n| n.name.clone())
-            .unwrap_or_default();
+
+        let name = exit.name.clone();
         if let Some(n) = p.nodes.iter_mut().find(|n| n.id == id) {
             n.detour = detour_raw.clone();
         }
@@ -196,7 +214,12 @@ pub async fn set_node_detour(
     if state.core.is_running().await {
         let p = state.visible_profile().await;
         let cfg = state.config.read().await;
-        state.core.reload(&p, &cfg).await?;
+        // reload 失败要返回给前端，避免「UI 显示已设置但核心仍是旧配置」
+        if let Err(e) = state.core.reload(&p, &cfg).await {
+            return Err(AppError(anyhow::anyhow!(
+                "已保存链式设置，但核心重载失败: {e}。请到日志页查看 FATAL。"
+            )));
+        }
     }
     Ok(Json(serde_json::json!({
         "ok": true,
