@@ -106,7 +106,16 @@ function fmtB(n: number): string {
   if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
   return n + ' B'
 }
-const dailyMax = computed(() => Math.max(1, ...dailyDays.value.map(d => (d.up || 0) + (d.down || 0))))
+/** 列表展示：新在上；日期只显示 MM-DD 以省宽度 */
+const dailyList = computed(() => {
+  const list = [...dailyDays.value].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  return list
+})
+function shortDate(d: string): string {
+  // 期望 YYYY-MM-DD → MM-DD；其它原样
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '')
+  return m ? `${m[2]}-${m[3]}` : (d || '—')
+}
 const daily30Total = computed(() =>
   dailyDays.value.reduce((s, d) => s + (d.up || 0) + (d.down || 0), 0),
 )
@@ -137,14 +146,16 @@ const daily30Total = computed(() =>
         <div class="side-stats-today">
           今日 ↑ {{ fmtB(dailyToday.up) }} · ↓ {{ fmtB(dailyToday.down) }}
         </div>
-        <div class="side-stats-bars" v-if="dailyDays.length">
+        <div class="side-stats-list" v-if="dailyList.length">
           <div
-            v-for="(d, i) in dailyDays"
+            v-for="(d, i) in dailyList"
             :key="d.date + i"
-            class="bar"
+            class="side-stats-row"
             :title="`${d.date}  ↑${fmtB(d.up)}  ↓${fmtB(d.down)}`"
           >
-            <div class="bar-fill" :style="{ height: ((((d.up||0)+(d.down||0)) / dailyMax) * 100) + '%' }"></div>
+            <span class="side-stats-date">{{ shortDate(d.date) }}</span>
+            <span class="side-stats-up">↑{{ fmtB(d.up) }}</span>
+            <span class="side-stats-down">↓{{ fmtB(d.down) }}</span>
           </div>
         </div>
         <div class="side-stats-empty" v-else>暂无数据</div>
@@ -195,7 +206,7 @@ const daily30Total = computed(() =>
   display: inline-block;
 }
 
-/* 侧栏流量统计：整体与柱图轨道均透明，透出侧栏底色 */
+/* 侧栏流量统计：列表展示每日上下行 */
 .side-stats {
   margin-top: auto;
   padding: 10px 10px 12px;
@@ -210,22 +221,30 @@ const daily30Total = computed(() =>
 }
 .side-stats-tot { color: var(--muted); font-weight: 500; font-size: 10px; }
 .side-stats-today { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
-.side-stats-bars {
-  display: flex; align-items: flex-end; gap: 2px; height: 44px;
+.side-stats-list {
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   background: transparent;
 }
-.bar {
-  flex: 1;
-  background: transparent;
-  border-radius: 2px 2px 0 0;
-  position: relative; height: 100%;
-  display: flex; align-items: flex-end;
+.side-stats-row {
+  display: grid;
+  grid-template-columns: 42px 1fr 1fr;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 4px;
+  border-radius: 4px;
+  line-height: 1.3;
 }
-.bar-fill {
-  width: 100%;
-  background: linear-gradient(180deg, #3b82f6 0%, #1e40af 100%);
-  border-radius: 2px 2px 0 0;
-  min-height: 0;
+.side-stats-row:hover { background: rgba(0, 0, 0, 0.04); }
+.side-stats-date {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
+.side-stats-up { color: #16a34a; text-align: right; font-variant-numeric: tabular-nums; }
+.side-stats-down { color: #2563eb; text-align: right; font-variant-numeric: tabular-nums; }
 .side-stats-empty { color: var(--muted); font-size: 11px; }
 </style>
