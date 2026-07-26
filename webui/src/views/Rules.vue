@@ -6,14 +6,15 @@ import { api } from '../api'
 const emit = defineEmits<{ (e: 'refresh'): void }>()
 
 const name = ref('')
+// 默认用后缀匹配：整站/子域更符合「测 IP 站」这类场景；精确 domain 只匹配主机本身
 const type = ref('domain_suffix')
 const payload = ref('')
 const outbound = ref('direct')
 
-// sing-box 合法规则类型（渲染器直接透传为 route.rules 的 type）
+// sing-box 合法规则类型（渲染器映射为对应字段）
 const types: [string, string][] = [
-  ['domain', '域名(精确)'],
-  ['domain_suffix', '域名后缀'],
+  ['domain_suffix', '域名后缀（推荐，含自身与子域）'],
+  ['domain', '域名精确（仅主机本身）'],
   ['domain_keyword', '域名关键字'],
   ['domain_regex', '域名正则'],
   ['geosite', 'GeoSite 分类'],
@@ -63,16 +64,19 @@ async function del(id: string) {
   <section>
     <h2>路由规则</h2>
     <p class="hint" style="margin:8px 0 12px">
-      类型选「域名(精确)」时，填主机名即可，例如 <code>ip.skk.moe</code>；
-      粘贴 <code>https://ip.skk.moe/</code> 也会自动去掉协议和路径。
-      规则只影响匹配流量；不会改默认出站。若配置非法，核心会拒绝加载并提示错误。
+      <b>域名匹配说明：</b>
+      <code>域名精确</code> 只匹配主机本身（如 <code>ip.skk.moe</code>），
+      不会匹配 <code>ip.api.skk.moe</code> / <code>cdn.skk.moe</code>。
+      测 IP 站这类页面通常还有 API/CDN 子域，请用
+      <code>域名后缀</code> 填 <code>skk.moe</code>（匹配所有 <code>*.skk.moe</code> 与自身）。
+      粘贴完整 URL 也会自动提取主机名。规则只改匹配到的流量，其它仍走默认节点。
     </p>
     <div class="form">
       <input v-model="name" type="text" placeholder="名称（可选）" />
       <select v-model="type">
         <option v-for="[k, l] in types" :key="k" :value="k">{{ l }}</option>
       </select>
-      <input v-model="payload" type="text" placeholder="匹配内容，如 ip.skk.moe / geosite:cn / 192.168.0.0/16（域名可写 URL，会自动提取主机名）" style="min-width: 300px" />
+      <input v-model="payload" type="text" placeholder="如 skk.moe（后缀）/ ip.skk.moe（精确）/ geosite:cn / 192.168.0.0/16" style="min-width: 300px" />
       <select v-model="outbound">
         <option value="direct">direct</option>
         <option value="block">block</option>
