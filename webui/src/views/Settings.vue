@@ -82,15 +82,16 @@ function onElevateCancel() {
       <h3 style="margin-top:8px">TUN 性能</h3>
       <label>协议栈
         <select v-model="form.tun_stack">
-          <option value="mixed">mixed（推荐：TCP 系统栈，吞吐通常最好）</option>
+          <option value="gvisor">gvisor（默认：连通性最稳）</option>
+          <option value="mixed">mixed（TCP 系统栈，部分环境更快，也可能上不了网）</option>
           <option value="system">system（纯系统栈）</option>
-          <option value="gvisor">gvisor（纯用户态，兼容性好但大吞吐可能很慢）</option>
         </select>
       </label>
       <label>MTU<input v-model.number="form.tun_mtu" type="number" min="1280" max="65535" step="1" /></label>
       <p class="hint">
-        若 TUN 比系统代理慢一个数量级，优先把栈改成 <code>mixed</code> 或 <code>system</code>，
-        MTU 可先用 <code>9000</code>；个别网络异常再试 <code>1500</code>。保存后会重建核心配置。
+        默认 <code>gvisor</code> + MTU <code>1500</code> 优先保证能上网。
+        若确认连通正常还想冲吞吐，可再试 <code>mixed</code>/<code>system</code> 或把 MTU 调到 <code>9000</code>。
+        保存后会重建核心配置。日志默认写在数据目录 <code>logs/</code>。
       </p>
     </div>
 

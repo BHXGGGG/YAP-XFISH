@@ -306,8 +306,12 @@ impl CoreManager {
     }
 }
 
-/// 将核心子进程的 stdout/stderr 逐行转发为 AppEvent::Log 事件（网页日志面板可见）。
+/// 将核心子进程的 stdout/stderr 逐行转发为 AppEvent::Log 事件（网页日志面板可见），
+/// 并默认追加到 data/logs/yap-xfish.log。
 /// 持续排空管道，避免缓冲区满导致核心阻塞。
+///
+/// 注意：sing-box 本身也通过 config.log.output 写 data/logs/sing-box.log；
+/// 这里的落盘是「管道捕获副本」，两者互补（核心 output 更完整，管道副本带 source 标签）。
 fn spawn_log_reader(
     stream: impl AsyncRead + Unpin + Send + 'static,
     tx: tokio::sync::broadcast::Sender<AppEvent>,
@@ -322,8 +326,10 @@ fn spawn_log_reader(
                 Ok(_) => {
                     let l = line.trim_end_matches(['\r', '\n']).to_string();
                     if !l.is_empty() {
+                        let level = log_level_of(&l);
+                        crate::system::log_file::append("core", &level, &l);
                         let _ = tx.send(AppEvent::Log {
-                            level: log_level_of(&l),
+                            level,
                             source: "core".into(),
                             message: l,
                         });

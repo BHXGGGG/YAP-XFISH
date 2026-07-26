@@ -35,14 +35,11 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     // TUN 下的 DNS 请求会到 fake DNS 地址（如 172.19.0.2:53）；必须先 hijack
     // 到 sing-box DNS 模块，否则 Global 模式会把 DNS 包当普通流量送进代理节点，
     // 导致每次域名解析都绕一遍 Trojan，TUN 比系统代理明显变慢。
-    // sniff 带短 timeout + 限定 sniffer：全局无超时 sniff 在高 PPS 时会显著拖吞吐。
+    // 注意：不要给 sniff 加过短 timeout（如 100ms），部分 TLS/HTTP2 会 sniff 失败，
+    // 规则模式/域名分流会直接判错，表现为「TUN 完全上不了网」。
     let mut all_rules: Vec<Value> = vec![
         json!({ "protocol": "dns", "action": "hijack-dns" }),
-        json!({
-            "action": "sniff",
-            "timeout": "100ms",
-            "sniffer": ["http", "tls", "quic", "dns"]
-        }),
+        json!({ "action": "sniff" }),
     ];
     all_rules.extend(rules);
 
@@ -85,8 +82,27 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         "secret": cfg.api_secret,
     });
 
+    // 核心日志默认落盘到 data/logs/sing-box.log，便于排查 TUN/路由问题。
+    // output 用绝对路径，避免 cwd 变化导致写丢。
+    let core_log_path = {
+        let dir = if cfg.data_dir.as_os_str().is_empty() {
+            crate::app::default_data_dir()
+        } else {
+            cfg.data_dir.clone()
+        };
+        let logs = dir.join("logs");
+        let _ = std::fs::create_dir_all(&logs);
+        logs.join("sing-box.log")
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+
     let mut config = json!({
-        "log": { "level": "info", "timestamp": true },
+        "log": {
+            "level": "info",
+            "timestamp": true,
+            "output": core_log_path
+        },
         // sing-box 1.12+ 新版 DNS server 格式：用 type + server 取代旧的 address 字段
         // （旧格式在 1.12 起弃用、1.14 移除，1.13 直接 FATAL 拒绝启动）
         "dns": {
@@ -96,7 +112,6 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
             ],
             "final": "remote",
             "strategy": "prefer_ipv4",
-            // 独立缓存，减少 TUN 下重复解析对建连延迟的放大。
             "independent_cache": true
         },
         "inbounds": [
@@ -113,21 +128,19 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     });
 
     if cfg.enable_tun {
-        // TUN 吞吐优化（相对旧默认纯 gvisor）：
-        // - stack=mixed（可配置）：TCP 走系统栈，UDP 走 gvisor，大吞吐通常远好于纯 gvisor
-        // - mtu=9000（可配置）：减少分片与系统调用次数
-        // - endpoint_independent_nat：UDP 游戏/QUIC 更稳
-        // - auto_route=true：接管默认路由
+        // 默认连通优先：gvisor + MTU 1500 + auto_route，不加 strict_route。
+        // Windows 上 strict_route / 过大 MTU / mixed 都曾导致「完全上不了网」。
+        // 吞吐相关参数仍可在设置里改 tun_stack / tun_mtu 后 regen。
         // gvisor 启动失败时 core/manager 仍会回退写 stack=system 再启一次。
         let stack = match cfg.tun_stack.trim().to_ascii_lowercase().as_str() {
-            "gvisor" => "gvisor",
+            "mixed" => "mixed",
             "system" => "system",
-            _ => "mixed",
+            _ => "gvisor",
         };
         let mtu = if cfg.tun_mtu >= 1280 && cfg.tun_mtu <= 65535 {
             cfg.tun_mtu
         } else {
-            9000
+            1500
         };
         config["inbounds"]
             .as_array_mut()
@@ -138,9 +151,7 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
                 "address": ["172.19.0.1/30"],
                 "mtu": mtu,
                 "auto_route": true,
-                "strict_route": true,
-                "stack": stack,
-                "endpoint_independent_nat": true
+                "stack": stack
             }));
     }
 

@@ -39,6 +39,17 @@ async fn main() -> Result<()> {
     let (app_config, profile) = app::load_or_init(&data_dir)?;
     let state = Arc::new(AppState::new(app_config, profile, data_dir.clone()));
 
+    // 默认落盘日志：data/logs/yap-xfish.log（应用层）+ sing-box.log（核心 output）。
+    system::log_file::init(&data_dir);
+    state.log_with(
+        "app",
+        "info",
+        format!(
+            "日志目录: {} （yap-xfish.log / sing-box.log）",
+            data_dir.join("logs").display()
+        ),
+    );
+
     // 侧栏「流量统计」依赖此初始化；未调用则 /api/traffic/daily 永远返回 0。
     core::traffic_history::init_history(&data_dir);
 

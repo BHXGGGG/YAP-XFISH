@@ -46,11 +46,11 @@ pub struct AppConfig {
     /// 延迟测试：单次超时（毫秒）。
     #[serde(default = "default_latency_timeout")]
     pub latency_timeout: u64,
-    /// TUN 协议栈：`mixed`（推荐，TCP 走系统栈）/ `gvisor` / `system`。
-    /// 旧配置缺省时为 mixed，避免 gvisor 用户态 TCP 把吞吐压到几 Mbps。
+    /// TUN 协议栈：`gvisor`（默认，连通性最稳）/ `mixed` / `system`。
+    /// mixed 在部分 Windows 环境吞吐更好，但可能出现完全上不了网；可在设置里切换。
     #[serde(default = "default_tun_stack")]
     pub tun_stack: String,
-    /// TUN MTU。Windows + Wintun 下 9000 通常比 1500 更利于大吞吐；过小易分片。
+    /// TUN MTU。默认 1500 优先连通；需要冲吞吐时可在设置里改到 9000 等。
     #[serde(default = "default_tun_mtu")]
     pub tun_mtu: u32,
 }
@@ -108,12 +108,12 @@ fn default_latency_timeout() -> u64 {
 }
 
 fn default_tun_stack() -> String {
-    // mixed：TCP 走 system、UDP 走 gvisor，Windows 上大文件/测速通常远好于纯 gvisor。
-    "mixed".into()
+    // gvisor：Windows 上连通性通常最稳。mixed/system 可在设置里手动尝试提速。
+    "gvisor".into()
 }
 
 fn default_tun_mtu() -> u32 {
-    9000
+    1500
 }
 
 fn random_secret() -> String {
@@ -252,11 +252,14 @@ impl AppState {
     }
 
     /// 带来源的日志广播。来源用于前端染色 / 分组（core / app / sub / latency / config / http / net）。
+    /// 同时默认追加到 data/logs/yap-xfish.log，方便事后分析。
     pub fn log_with(&self, source: &str, level: &str, message: impl Into<String>) {
+        let message = message.into();
+        crate::system::log_file::append(source, level, &message);
         let _ = self.event_tx.send(AppEvent::Log {
             level: level.to_string(),
             source: source.to_string(),
-            message: message.into(),
+            message,
         });
     }
 
@@ -382,7 +385,24 @@ pub fn exe_dir() -> PathBuf {
 
 /// 加载或初始化配置与配置模型。
 pub fn load_or_init(data_dir: &std::path::Path) -> AppResult<(AppConfig, AppProfile)> {
-    let config = crate::config::manager::load_app_config(data_dir)?;
+    let mut config = crate::config::manager::load_app_config(data_dir)?;
     let profile = crate::config::manager::load_profile(data_dir)?;
+
+    // 运行时数据目录写回 config，供 render 写核心 log.output 等使用。
+    let mut dirty = false;
+    if config.data_dir != data_dir {
+        config.data_dir = data_dir.to_path_buf();
+        dirty = true;
+    }
+    // v0.1.25 曾默认 MTU=9000 + mixed/strict_route，部分环境会完全上不了网。
+    // 把遗留的 9000 软降到 1500（连通优先）；用户仍可在设置里手动改回。
+    if config.tun_mtu == 9000 {
+        config.tun_mtu = 1500;
+        dirty = true;
+    }
+    if dirty {
+        let _ = crate::config::manager::save_app_config(data_dir, &config);
+    }
+
     Ok((config, profile))
 }
