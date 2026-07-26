@@ -195,32 +195,37 @@ const daily30Total = computed(() =>
   display: inline-block;
 }
 
-/* 侧栏流量统计 */
+/* 侧栏流量统计：整体与柱图轨道均透明，透出侧栏底色 */
 .side-stats {
   margin-top: auto;
   padding: 10px 10px 12px;
-  border-top: 1px solid #1f2937;
-  color: #cbd5e1;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
   font-size: 11px;
 }
 .side-stats-title {
   display: flex; justify-content: space-between; align-items: center;
-  color: #f1f5f9; font-weight: 700; font-size: 12px; margin-bottom: 4px;
+  color: var(--text); font-weight: 700; font-size: 12px; margin-bottom: 4px;
 }
-.side-stats-tot { color: #94a3b8; font-weight: 500; font-size: 10px; }
-.side-stats-today { color: #cbd5e1; font-size: 11px; margin-bottom: 8px; }
+.side-stats-tot { color: var(--muted); font-weight: 500; font-size: 10px; }
+.side-stats-today { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
 .side-stats-bars {
   display: flex; align-items: flex-end; gap: 2px; height: 44px;
+  background: transparent;
 }
 .bar {
-  flex: 1; background: transparent;
+  flex: 1;
+  background: transparent;
   border-radius: 2px 2px 0 0;
   position: relative; height: 100%;
   display: flex; align-items: flex-end;
 }
 .bar-fill {
-  width: 100%; background: linear-gradient(180deg, #3b82f6 0%, #1e40af 100%);
-  border-radius: 2px 2px 0 0; min-height: 2px;
+  width: 100%;
+  background: linear-gradient(180deg, #3b82f6 0%, #1e40af 100%);
+  border-radius: 2px 2px 0 0;
+  min-height: 0;
 }
-.side-stats-empty { color: #64748b; font-size: 11px; }
+.side-stats-empty { color: var(--muted); font-size: 11px; }
 </style>
