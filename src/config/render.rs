@@ -32,14 +32,21 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         .collect();
 
     // sing-box 1.13：inbound 上的 sniff 字段已移除，改用 route 规则动作 `sniff`。
-    // TUN 下的 DNS 请求会到 fake DNS 地址（如 172.19.0.2:53）；必须先 hijack
-    // 到 sing-box DNS 模块，否则 Global 模式会把 DNS 包当普通流量送进代理节点，
-    // 导致每次域名解析都绕一遍 Trojan，TUN 比系统代理明显变慢。
-    // 注意：不要给 sniff 加过短 timeout（如 100ms），部分 TLS/HTTP2 会 sniff 失败，
-    // 规则模式/域名分流会直接判错，表现为「TUN 完全上不了网」。
+    //
+    // TUN DNS 关键（实测日志）：
+    // Windows 会把 DNS 打到 TUN 网关 172.19.0.2:53。若未 hijack 到 DNS 模块，
+    // Global 会把 UDP/53 当普通包送进 VLESS（log: outbound/vless → 172.19.0.2:53），
+    // 解析全挂，网页表现为「完全上不了网」；系统代理不受影响（HTTP/SOCKS 自带域名）。
+    //
+    // 顺序必须是：
+    // 1) 先 sniff，才能识别 protocol=dns
+    // 2) 再 protocol:dns → hijack-dns
+    // 3) 再 port 53/853 兜底（部分查询 sniff 识别不到）
+    // 不要给 sniff 加过短 timeout，TLS 嗅探失败会导致分流错判。
     let mut all_rules: Vec<Value> = vec![
-        json!({ "protocol": "dns", "action": "hijack-dns" }),
         json!({ "action": "sniff" }),
+        json!({ "protocol": "dns", "action": "hijack-dns" }),
+        json!({ "port": [53, 853], "action": "hijack-dns" }),
     ];
     all_rules.extend(rules);
 
@@ -106,11 +113,24 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         // sing-box 1.12+ 新版 DNS server 格式：用 type + server 取代旧的 address 字段
         // （旧格式在 1.12 起弃用、1.14 移除，1.13 直接 FATAL 拒绝启动）
         "dns": {
+            // local 走直连 UDP（国内可达）；remote 为 DoH 备用。
+            // TUN 下 DNS 被 hijack 后由本模块处理，不再进 VLESS。
             "servers": [
-                { "type": "https", "tag": "remote", "server": "1.1.1.1" },
-                { "type": "udp", "tag": "local", "server": "223.5.5.5" }
+                {
+                    "type": "udp",
+                    "tag": "local",
+                    "server": "223.5.5.5",
+                    "detour": "direct"
+                },
+                {
+                    "type": "https",
+                    "tag": "remote",
+                    "server": "1.1.1.1",
+                    "detour": "direct"
+                }
             ],
-            "final": "remote",
+            // TUN 场景优先 local，避免 DoH 被墙/超时拖垮全部建连。
+            "final": "local",
             "strategy": "prefer_ipv4",
             "independent_cache": true
         },
@@ -149,6 +169,8 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
                 "type": "tun",
                 "tag": "tun-in",
                 "address": ["172.19.0.1/30"],
+                // 显式声明 TUN 侧 DNS，配合 route hijack-dns；否则系统常把
+                // 172.19.0.2:53 当普通 UDP 送进 Global outbound。
                 "mtu": mtu,
                 "auto_route": true,
                 "stack": stack
