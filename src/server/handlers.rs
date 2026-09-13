@@ -351,27 +351,40 @@ pub async fn test_node_latency(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
-    {
-        let p = state.profile.read().await;
-        if !p.nodes.iter().any(|n| n.id == id) {
-            return Err(AppError(anyhow::anyhow!("节点不存在: {}", id)));
-        }
-    }
-    let st = state.clone();
-    tokio::spawn(async move {
-        let _ = crate::latency::test_one(&st, &id).await;
-    });
-    Ok(Json(serde_json::json!({ "ok": true, "async": true })))
+    start_latency_batch(state, Some(vec![id])).await
+}
+
+#[derive(Default, serde::Deserialize)]
+pub struct TestLatencyReq {
+    #[serde(default)]
+    pub node_ids: Option<Vec<String>>,
 }
 
 pub async fn test_all_latency(
     State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
 ) -> AppResult<Json<serde_json::Value>> {
-    let st = state.clone();
+    // 保留旧客户端的空 body 调用；新客户端按当前订阅页签传入节点 ID。
+    let req: TestLatencyReq = if body.is_empty() {
+        TestLatencyReq::default()
+    } else {
+        serde_json::from_slice(&body)?
+    };
+    start_latency_batch(state, req.node_ids).await
+}
+
+async fn start_latency_batch(
+    state: Arc<AppState>,
+    node_ids: Option<Vec<String>>,
+) -> AppResult<Json<serde_json::Value>> {
+    let batch = crate::latency::prepare(&state, node_ids).await?;
+    let count = batch.len();
     tokio::spawn(async move {
-        let _ = crate::latency::test_all(&st).await;
+        if let Err(e) = batch.run(&state).await {
+            state.log_with("latency", "error", format!("测速失败: {e}"));
+        }
     });
-    Ok(Json(serde_json::json!({ "ok": true, "async": true })))
+    Ok(Json(serde_json::json!({ "ok": true, "async": true, "count": count })))
 }
 
 // ---------- 订阅（阶段 5：持久化 + 调度 + 解析 + 自动更新） ----------
@@ -391,6 +404,8 @@ pub struct AddSubscriptionReq {
     pub url: String,
     #[serde(default)]
     pub interval: UpdateInterval,
+    /// 添加时是否启用。缺省 false：避免用户已有启用订阅时新增的
+    /// 第二/第三个订阅被自动启用；用户可在列表里手动开启。
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]

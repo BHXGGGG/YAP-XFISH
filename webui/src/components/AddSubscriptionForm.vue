@@ -8,11 +8,17 @@ const emit = defineEmits<{
   (e: 'cancel'): void
 }>()
 
+// 跟 Subscriptions.vue 保持一致的「启用」默认规则：
+//   当前已有至少一个启用订阅 → false；否则 → true。
+function defaultEnabled(): boolean {
+  return !(store.subscriptions || []).some((s: any) => s.enabled)
+}
+
 const form = reactive({
   name: '',
   url: '',
   interval: 'every6_hours',
-  enabled: true,
+  enabled: defaultEnabled(),
   uaPreset: 'default',
   userAgent: '',
 })
@@ -49,8 +55,16 @@ function reset() {
   form.userAgent = ''
   form.uaPreset = 'default'
   form.interval = 'every6_hours'
-  form.enabled = true
+  form.enabled = defaultEnabled()
 }
+
+// 订阅列表变化时同步表单默认值
+watch(
+  () => (store.subscriptions || []).map((s: any) => `${s.id}:${s.enabled ? 1 : 0}`).join('|'),
+  () => {
+    if (!form.url) form.enabled = defaultEnabled()
+  },
+)
 
 async function submit() {
   if (!form.url) { toast('请填写订阅 URL'); return }

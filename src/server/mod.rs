@@ -1,5 +1,6 @@
 pub mod handlers;
 pub mod static_files;
+mod updates;
 pub mod ws;
 
 use std::net::SocketAddr;
@@ -80,6 +81,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/debug/memory", get(handlers::mem_debug))
         .route("/api/connections", get(handlers::list_connections))
         .route("/api/version", get(handlers::get_version))
+        .route("/api/update/check", get(updates::check_update))
         .route("/api/traffic/daily", get(handlers::traffic_daily))
         .route("/api/ws", get(ws::ws_handler))
         // fallback 必须在 with_state 之前：先有 Router<()> 再注入 state。

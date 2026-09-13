@@ -115,9 +115,13 @@ function fmtB(n: number): string {
   if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
   return n + ' B'
 }
-/** 列表展示：新在上；日期只显示 MM-DD 以省宽度 */
+/** 列表展示：新在上；过滤掉今天，因为上面"今日 ↑ ↓"那行已经显示了。
+ *  否则今天会同时出现在侧栏顶和列表里，重复且浪费纵向空间。 */
 const dailyList = computed(() => {
-  const list = [...dailyDays.value].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+  const today = dailyToday.value.date
+  const list = dailyDays.value
+    .filter((d) => d.date !== today)
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
   return list
 })
 function shortDate(d: string): string {

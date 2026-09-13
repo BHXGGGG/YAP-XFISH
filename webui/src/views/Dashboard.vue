@@ -2,6 +2,7 @@
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
+import { markTesting, clearTesting } from '../latency'
 import Modal from '../components/Modal.vue'
 import AddSubscriptionForm from '../components/AddSubscriptionForm.vue'
 
@@ -156,6 +157,50 @@ const visibleNodes = computed(() => {
   )
 })
 
+/* ---------- 订阅 tab：≥ 2 个启用订阅时显示，用于按订阅切换节点 ---------- */
+// tab id 取值：
+//   '__all__'           → 全部节点（默认）
+//   '__manual__'        → 仅手动节点（无 subscription_id）
+//   '<subscription id>' → 该订阅内的节点
+const activeSubTab = ref<string>('__all__')
+
+// 仅在启用订阅 ≥ 2 时显示 tab 行；≤ 1 时直接展示全部节点，避免噪声。
+const showSubTabs = computed(() => {
+  const enabledSubs = (store.subscriptions || []).filter((s: any) => s.enabled)
+  return enabledSubs.length >= 2
+})
+
+// 仅在确实存在手动节点（profile.nodes 里 subscription_id 为空）时显示 "手动" tab
+const hasManualNodes = computed(() =>
+  store.profile.nodes.some((n: any) => n.subscription_id == null),
+)
+
+// 构建 tab 列表：全部 + 启用订阅（按名）+ 手动（条件）
+const subTabs = computed(() => {
+  const enabled = (store.subscriptions || []).filter((s: any) => s.enabled)
+  const tabs: { id: string; label: string }[] = [{ id: '__all__', label: '全部' }]
+  for (const s of enabled) {
+    tabs.push({ id: s.id, label: s.name })
+  }
+  if (hasManualNodes.value) {
+    tabs.push({ id: '__manual__', label: '手动' })
+  }
+  return tabs
+})
+
+// 当前 tab 在 enabled 订阅被关掉时回落到「全部」
+watch(showSubTabs, (v) => {
+  if (!v) {
+    activeSubTab.value = '__all__'
+  } else if (
+    activeSubTab.value !== '__all__' &&
+    activeSubTab.value !== '__manual__' &&
+    !store.subscriptions.some((s: any) => s.id === activeSubTab.value && s.enabled)
+  ) {
+    activeSubTab.value = '__all__'
+  }
+})
+
 const sortByLatency = ref(false)
 const query = ref('')
 
@@ -163,8 +208,18 @@ function norm(s: string) {
   return (s || '').toString().toLowerCase()
 }
 
+// 按当前 tab 过滤后再走搜索/排序。
+const tabFilteredNodes = computed(() => {
+  const tab = activeSubTab.value
+  if (tab === '__all__') return visibleNodes.value
+  if (tab === '__manual__') {
+    return visibleNodes.value.filter((n: any) => n.subscription_id == null)
+  }
+  return visibleNodes.value.filter((n: any) => n.subscription_id === tab)
+})
+
 const displayedNodes = computed(() => {
-  const base = visibleNodes.value
+  const base = tabFilteredNodes.value
   const q = norm(query.value).trim()
   const filtered = q
     ? base.filter((n: any) => {
@@ -192,24 +247,27 @@ async function setMode(m: string) {
   try { await api.setMode(m); toast('已切换模式') } catch (e: any) { toast(e.message) }
 }
 async function testAll() {
-  visibleNodes.value.forEach((n: any) => {
-    n.testing = true
-    if (n._testingTimer) clearTimeout(n._testingTimer)
-    n._testingTimer = setTimeout(() => { n.testing = false }, 30_000)
-  })
+  // 在 tab 上下文里："测试全部延迟" 实际指「当前 tab 全部节点」。
+  // tab = 全部 时 = 全订阅节点；切到具体订阅时 = 仅该订阅。
+  const targets = tabFilteredNodes.value.filter((n: any) => !n.testing)
+  if (!targets.length) return
+  markTesting(targets)
   // 测全部延迟时自动按延迟排序，方便用户即时看到结果排名
   sortByLatency.value = true
-  try { await api.testAllLatency(); toast('已开始测速（结果实时刷新）') } catch (e: any) { toast(e.message) }
+  try {
+    await api.testAllLatency(targets.map((n: any) => n.id))
+    toast('已开始测速（结果实时刷新）')
+  } catch (e: any) {
+    clearTesting(targets)
+    toast(e.message)
+  }
 }
 async function testOne(id: string, ev?: Event) {
   if (ev) ev.stopPropagation()
   const n = visibleNodes.value.find((x: any) => x.id === id)
-  if (n) {
-    n.testing = true
-    if (n._testingTimer) clearTimeout(n._testingTimer)
-    n._testingTimer = setTimeout(() => { n.testing = false }, 30_000)
-  }
-  try { await api.testNodeLatency(id) } catch (e: any) { toast(e.message) }
+  if (!n || n.testing) return
+  markTesting([n])
+  try { await api.testNodeLatency(id) } catch (e: any) { clearTesting([n]); toast(e.message) }
 }
 
 const emit = defineEmits<{ (e: 'navigate', tab: string): void }>()
@@ -429,6 +487,18 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
       </div>
     </div>
 
+    <!-- 订阅切换 tab：仅在启用订阅 ≥ 2 时显示 -->
+    <div v-if="showSubTabs" class="sub-tabs" role="tablist" aria-label="按订阅切换节点">
+      <button
+        v-for="t in subTabs"
+        :key="t.id"
+        role="tab"
+        :aria-selected="activeSubTab === t.id"
+        :class="{ active: activeSubTab === t.id }"
+        @click="activeSubTab = t.id"
+      >{{ t.label }}</button>
+    </div>
+
     <div v-if="!visibleNodes.length" class="empty">
       暂无节点。
       <button class="link-btn" @click="openAddDialog">立即添加订阅</button>
@@ -593,6 +663,34 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 @media (max-width: 1280px) { .nodes-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px)  { .nodes-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px)  { .nodes-grid { grid-template-columns: 1fr; } }
+
+/* 订阅切换 tab：横向 chip 行，仅在多订阅时显示 */
+.sub-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 10px;
+  flex-wrap: wrap;
+}
+.sub-tabs button {
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.sub-tabs button:hover { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
+.sub-tabs button.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
 
 .node-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);

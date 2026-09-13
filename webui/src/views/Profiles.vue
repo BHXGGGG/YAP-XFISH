@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
+import { markTesting, clearTesting } from '../latency'
 
 const modes: [string, string][] = [['global', '全局'], ['rule', '规则'], ['direct', '直连']]
 
@@ -56,22 +57,23 @@ async function setMode(m: string) {
   try { await api.setMode(m); toast('已切换模式') } catch (e: any) { toast(e.message) }
 }
 async function testAll() {
-  visibleNodes.value.forEach((n: any) => {
-    n.testing = true
-    if (n._testingTimer) clearTimeout(n._testingTimer)
-    n._testingTimer = setTimeout(() => { n.testing = false }, 30_000)
-  })
-  try { await api.testAllLatency(); toast('已开始测速（结果实时刷新）') } catch (e: any) { toast(e.message) }
+  const targets = visibleNodes.value.filter((n: any) => !n.testing)
+  if (!targets.length) return
+  markTesting(targets)
+  try {
+    await api.testAllLatency(targets.map((n: any) => n.id))
+    toast('已开始测速（结果实时刷新）')
+  } catch (e: any) {
+    clearTesting(targets)
+    toast(e.message)
+  }
 }
 async function testOne(id: string, ev?: Event) {
   if (ev) ev.stopPropagation()
   const n = visibleNodes.value.find((x: any) => x.id === id)
-  if (n) {
-    n.testing = true
-    if (n._testingTimer) clearTimeout(n._testingTimer)
-    n._testingTimer = setTimeout(() => { n.testing = false }, 30_000)
-  }
-  try { await api.testNodeLatency(id) } catch (e: any) { toast(e.message) }
+  if (!n || n.testing) return
+  markTesting([n])
+  try { await api.testNodeLatency(id) } catch (e: any) { clearTesting([n]); toast(e.message) }
 }
 </script>
 

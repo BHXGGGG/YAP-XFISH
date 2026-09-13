@@ -378,6 +378,9 @@ fn parse_link(line: &str) -> Option<Node> {
     if let Some(rest) = line.strip_prefix("hysteria://") {
         return parse_hy2(rest);
     }
+    if let Some(rest) = line.strip_prefix("anytls://") {
+        return parse_anytls(rest);
+    }
     None
 }
 
@@ -515,6 +518,67 @@ fn parse_hy2(s: &str) -> Option<Node> {
             if k == "sni" {
                 node.sni = Some(v.to_string());
             }
+        }
+    }
+    Some(node)
+}
+
+/// v2rayN 风格的 anytls 链接：`anytls://password@host:port?sni=...&insecure=1&fp=chrome&alpn=h2,http/1.1#name`。
+///
+/// anytls（AnyTLS）协议：sing-box 1.13.14 接受 `type: "anytls"` outbound，必须启用 TLS，
+/// 与 hysteria2 行为类似，常用伪装 SNI + insecure=true。详见：
+/// https://github.com/anytls/anytls-go 与 sing-box outbound 文档。
+fn parse_anytls(s: &str) -> Option<Node> {
+    let (auth_host, name) = split_name(s);
+    let (pass_host, query) = match auth_host.split_once('?') {
+        Some((a, q)) => (a, q),
+        None => (auth_host.as_str(), ""),
+    };
+    let (password, hostport) = pass_host.split_once('@')?;
+    let (server, port) = split_host_port(hostport)?;
+    let mut node = Node {
+        id: String::new(),
+        name,
+        kind: "anytls".into(),
+        server,
+        port,
+        password: Some(urldecode(password)),
+        // anytls 强制要求 TLS
+        tls: Some(true),
+        // 机场常用伪装 SNI（如 itunes / bing / apple.com），严格校验会立即
+        // `CRYPTO_ERROR x509: certificate signed by unknown authority`。
+        // 业内默认 insecure=true（与 hysteria2 行为一致），用户可在节点编辑里关掉。
+        skip_cert_verify: Some(true),
+        ..Default::default()
+    };
+    for pair in query.split('&') {
+        let Some((k, v)) = pair.split_once('=') else { continue };
+        let v_dec = urldecode(v);
+        // 空值丢弃，避免写 `sni: ""` / `fingerprint: ""` 等导致 sing-box 启动失败。
+        if v_dec.is_empty() {
+            continue;
+        }
+        match k {
+            "sni" | "peer" => node.sni = Some(v_dec),
+            "fp" | "fingerprint" => node.fingerprint = Some(v_dec),
+            "alpn" => {
+                let list: Vec<String> = v_dec
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !list.is_empty() {
+                    node.alpn = Some(list);
+                }
+            }
+            "insecure" | "allowInsecure" => {
+                if v == "1" || v.eq_ignore_ascii_case("true") {
+                    node.skip_cert_verify = Some(true);
+                } else {
+                    node.skip_cert_verify = Some(false);
+                }
+            }
+            _ => {}
         }
     }
     Some(node)
@@ -754,5 +818,26 @@ proxies:
     #[test]
     fn parse_empty_fails() {
         assert!(parse("not-a-subscription").is_err());
+    }
+
+    #[test]
+    fn parse_anytls_link() {
+        // 使用示例地址和密码，验证链接参数及名称解码。
+        let link = "anytls://example-password@example.com:5001?sni=example.org&insecure=1&fp=chrome&alpn=h2,http/1.1#anytls%20%E9%A6%99%E6%B8%AF%201";
+        let n = parse(link).unwrap();
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].kind, "anytls");
+        assert_eq!(n[0].server, "example.com");
+        assert_eq!(n[0].port, 5001);
+        assert_eq!(n[0].password.as_deref(), Some("example-password"));
+        assert_eq!(n[0].sni.as_deref(), Some("example.org"));
+        assert_eq!(n[0].fingerprint.as_deref(), Some("chrome"));
+        assert_eq!(n[0].skip_cert_verify, Some(true));
+        assert_eq!(n[0].tls, Some(true));
+        assert_eq!(
+            n[0].alpn.as_deref(),
+            Some(&["h2".to_string(), "http/1.1".to_string()] as &[String])
+        );
+        assert_eq!(n[0].name, "anytls 香港 1");
     }
 }

@@ -1,514 +1,223 @@
+//! 节点测速调度：限制同时运行的任务，完成一个就立即推送并补充下一个。
+mod probe;
+
 use crate::app::{AppEvent, AppState};
-use crate::config::model::Node;
-use crate::config::render;
+use crate::config::model::{AppProfile, Node};
 use crate::error::{AppError, AppResult};
+use probe::ProbeContext;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::task::JoinSet;
 
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+/// 与设置页范围一致；默认 50，避免把用户设置静默压到 16。
+const MAX_CONCURRENCY: usize = 200;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::Mutex;
+struct NodeClaims {
+    shared: Arc<Mutex<HashSet<String>>>,
+    ids: HashSet<String>,
+}
 
-/// 测量单个节点的延迟（毫秒）。
-///
-/// 协议节点（vmess/vless/trojan/ss/hysteria2 等）参考 UIF
-/// (https://github.com/UIforFreedom/UIF) 的做法：
-///   1. 生成临时 sing-box 配置：所有待测 outbound + experimental.clash_api
-///   2. 起一个**临时** core 进程（测完 kill）
-///   3. 请求 Clash API：`GET /proxies/{tag}/delay?timeout=...&url=...`
-///   4. 读返回 JSON 的 `delay` 字段
-///
-/// socks5/http 通用代理节点仍直接用 reqwest 走节点出口测 URL。
-/// 失败/超时返回 `None`（前端显示「不可达」）。
-pub async fn measure(
-    state: &AppState,
-    node: &Node,
-    test_url: &str,
-    timeout_ms: u64,
-) -> Option<u32> {
-    let timeout = Duration::from_millis(timeout_ms.max(1));
-    match node.kind.as_str() {
-        "socks" | "socks5" | "http" | "https" => proxy_measure(node, test_url, timeout).await,
-        _ => {
-            // 单节点：临时 core 注入本节点 + detour 链上前置，测真实链路
-            let all = state.profile.read().await.nodes.clone();
-            let chain = render::collect_chain_nodes(&all, node);
-            let session = UifProbeSession::start(state, &chain).await?;
-            let lat = session.delay(&node.id, test_url, timeout_ms).await;
-            session.shutdown().await;
-            lat
+impl NodeClaims {
+    fn acquire(state: &AppState, targets: &[Node]) -> Self {
+        let shared = state.latency_in_flight.clone();
+        let ids = {
+            let mut active = shared.lock().unwrap_or_else(|e| e.into_inner());
+            targets
+                .iter()
+                .filter(|n| active.insert(n.id.clone()))
+                .map(|n| n.id.clone())
+                .collect()
+        };
+        Self { shared, ids }
+    }
+
+    fn release(&mut self, id: &str) {
+        self.ids.remove(id);
+        self.shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+    }
+}
+
+impl Drop for NodeClaims {
+    fn drop(&mut self) {
+        let mut active = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &self.ids {
+            active.remove(id);
         }
     }
 }
 
-async fn proxy_measure(node: &Node, test_url: &str, timeout: Duration) -> Option<u32> {
-    let scheme = if node.kind == "http" || node.kind == "https" {
-        "http"
-    } else {
-        "socks5h"
+/// 一次请求的配置快照和节点集合。丢弃或取消任务时自动释放测速占用。
+pub struct LatencyBatch {
+    profile: AppProfile,
+    targets: Vec<Node>,
+    claims: NodeClaims,
+}
+
+/// None = 全部可见节点；Some([]) = 不测速；显式 ID 必须属于当前可见节点。
+/// 同一节点正在测速时复用已有任务的结果，避免重复点击启动更多核心/请求。
+pub async fn prepare(state: &AppState, node_ids: Option<Vec<String>>) -> AppResult<LatencyBatch> {
+    let profile = state.visible_profile().await;
+    let mut targets = select_targets(&profile, node_ids.as_deref())?;
+    let claims = NodeClaims::acquire(state, &targets);
+    targets.retain(|n| claims.ids.contains(&n.id));
+    Ok(LatencyBatch {
+        profile,
+        targets,
+        claims,
+    })
+}
+
+fn select_targets(profile: &AppProfile, ids: Option<&[String]>) -> AppResult<Vec<Node>> {
+    let Some(ids) = ids else {
+        return Ok(profile.nodes.clone());
     };
-    let proxy_str = format!("{scheme}://{}:{}", node.server, node.port);
-    let mut proxy = reqwest::Proxy::all(&proxy_str).ok()?;
-    if let Some(pass) = &node.password {
-        let user = extra_username(node).unwrap_or_default();
-        proxy = proxy.basic_auth(&user, pass);
-    }
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .proxy(proxy)
-        .build()
-        .ok()?;
-    let start = Instant::now();
-    let r = tokio::time::timeout(timeout, client.get(test_url).send()).await;
-    match r {
-        Ok(Ok(_)) => Some(start.elapsed().as_millis() as u32),
-        _ => None,
-    }
-}
-
-fn extra_username(node: &Node) -> Option<String> {
-    if let Some(extra) = &node.extra {
-        if let Some(obj) = extra.as_object() {
-            for k in ["username", "user"] {
-                if let Some(v) = obj.get(k).and_then(|x| x.as_str()) {
-                    return Some(v.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// UIF 风格：一批节点共享一个临时 sing-box + Clash API 会话。
-struct UifProbeSession {
-    child: Mutex<Option<tokio::process::Child>>,
-    api_base: String,
-    tmp_dir: PathBuf,
-    #[allow(dead_code)]
-    cfg_path: PathBuf,
-}
-
-impl UifProbeSession {
-    /// 启动临时 core。nodes 全部作为 outbound 注入；clash_api 监听随机端口。
-    async fn start(state: &AppState, nodes: &[Node]) -> Option<Self> {
-        if nodes.is_empty() {
-            return None;
-        }
-        let binary = resolve_singbox_binary(state);
-        if !binary.exists() {
-            return None;
-        }
-
-        let api_port = pick_free_port()?;
-        let mut outbounds: Vec<serde_json::Value> = nodes
+    let mut seen = HashSet::new();
+    let mut targets = Vec::new();
+    for id in ids {
+        let node = profile
+            .nodes
             .iter()
-            .map(|n| {
-                // 用带 detour 的渲染（目标也在本临时 core 的 nodes 列表中）
-                let mut ob = render::node_to_outbound(n);
-                if let Some(obj) = ob.as_object_mut() {
-                    obj.insert("tag".into(), serde_json::json!(n.id));
-                }
-                ob
-            })
-            .collect();
-        outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
-
-        // 对齐 UIF MutipleTemplate：临时 core 只开 clash_api，不需要 inbound。
-        // route.final 用 direct；delay API 会按 proxy tag 指定出站。
-        let cfg = serde_json::json!({
-            "log": { "level": "error", "timestamp": true },
-            "dns": {
-                "servers": [
-                    { "type": "udp", "tag": "local", "server": "223.5.5.5" }
-                ],
-                "final": "local",
-                "strategy": "prefer_ipv4"
-            },
-            "outbounds": outbounds,
-            "route": {
-                "final": "direct",
-                "auto_detect_interface": true,
-                "default_domain_resolver": { "server": "local" }
-            },
-            "experimental": {
-                "clash_api": {
-                    "external_controller": format!("127.0.0.1:{api_port}"),
-                    "secret": ""
-                }
-            }
-        });
-
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "yap-xfish-uif-probe-{}-{}",
-            std::process::id(),
-            api_port
-        ));
-        let _ = std::fs::create_dir_all(&tmp_dir);
-        let cfg_path = tmp_dir.join("probe.json");
-        if std::fs::write(
-            &cfg_path,
-            serde_json::to_vec_pretty(&cfg).unwrap_or_default(),
-        )
-        .is_err()
-        {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return None;
+            .find(|n| &n.id == id)
+            .ok_or_else(|| AppError(anyhow::anyhow!("节点不存在或所属订阅未启用: {id}")))?;
+        if seen.insert(id) {
+            targets.push(node.clone());
         }
+    }
+    Ok(targets)
+}
 
-        let mut child = match {
-                    let mut cmd = tokio::process::Command::new(&binary);
-                    cmd.arg("run")
-                        .arg("-c")
-                        .arg(&cfg_path)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::piped())
-                        .stdin(Stdio::null())
-                        .kill_on_drop(true);
-                    // 测速临时 core 也禁止弹黑框（与 core::process 一致）。
-                    #[cfg(windows)]
-                    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-                    cmd.spawn()
-                } {
-                    Ok(c) => c,
-                    Err(_) => {
-                        let _ = std::fs::remove_dir_all(&tmp_dir);
-                        return None;
-                    }
-                };
+#[derive(Default)]
+struct BatchStats {
+    completed: usize,
+    successful: usize,
+    first_result_ms: Option<u128>,
+}
 
-        // 吞掉 stderr，避免管道阻塞
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(_)) = lines.next_line().await {}
-            });
-        }
-
-        // 等 clash_api 起来（最多约 3s）
-        let api_base = format!("http://127.0.0.1:{api_port}");
-        let ready = wait_api_ready(&api_base, Duration::from_secs(3)).await;
-        if !ready {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return None;
-        }
-
-        Some(Self {
-            child: Mutex::new(Some(child)),
-            api_base,
-            tmp_dir,
-            cfg_path,
-        })
+impl LatencyBatch {
+    pub fn len(&self) -> usize {
+        self.targets.len()
     }
 
-    /// 调用 Clash API `/proxies/{tag}/delay`（与 UIF TestMultipleNode 一致）。
-    async fn delay(&self, tag: &str, test_url: &str, timeout_ms: u64) -> Option<u32> {
-        let timeout_ms = timeout_ms.max(500);
-        // tag 可能含特殊字符；UIF 用 encodeURIComponent，这里做同样处理
-        let encoded = urlencoding_minimal(tag);
-        let url = format!(
-            "{}/proxies/{}/delay?timeout={}&url={}",
-            self.api_base,
-            encoded,
-            timeout_ms,
-            // url 参数本身也需要编码
-            urlencoding_minimal(test_url)
+    pub async fn run(mut self, state: &AppState) -> AppResult<()> {
+        if self.targets.is_empty() {
+            return Ok(());
+        }
+        let cfg = state.config.read().await.clone();
+        let concurrency = cfg.latency_concurrency.clamp(1, MAX_CONCURRENCY);
+        let started = Instant::now();
+        state.log_with(
+            "latency",
+            "info",
+            format!(
+                "开始测速: 节点={} 并发={} 超时={}ms",
+                self.targets.len(),
+                concurrency,
+                cfg.latency_timeout
+            ),
         );
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(timeout_ms + 1500))
-            .no_proxy()
-            .build()
-            .ok()?;
-        let resp = client.get(&url).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
+
+        let mut context = ProbeContext::prepare(state, &self.profile, &self.targets).await;
+        state.log_with("latency", "info", format!("测速方式: {}", context.label()));
+        let stats = self
+            .run_probes(
+                state,
+                &context,
+                &cfg.latency_test_url,
+                cfg.latency_timeout,
+                concurrency,
+                started,
+            )
+            .await;
+        context.shutdown().await;
+
+        // 结果已推送；整批只落盘一次，磁盘写入不阻塞首个结果。
+        {
+            let profile = state.profile.read().await;
+            crate::config::manager::save_profile(&state.data_dir, &profile)?;
         }
-        let v: serde_json::Value = resp.json().await.ok()?;
-        // sing-box / Clash Meta 返回 {"delay": N}；0 表示失败
-        let d = v.get("delay").and_then(|x| x.as_u64()).unwrap_or(0);
-        if d == 0 {
-            None
-        } else {
-            Some(d as u32)
-        }
+        state.log_with(
+            "latency",
+            "info",
+            format!(
+                "测速完成: 首个结果={}ms 总耗时={}ms 成功={} 失败={}",
+                stats.first_result_ms.unwrap_or_default(),
+                started.elapsed().as_millis(),
+                stats.successful,
+                stats.completed - stats.successful,
+            ),
+        );
+        Ok(())
     }
 
-    async fn shutdown(self) {
-        if let Some(mut child) = self.child.lock().await.take() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-        let _ = std::fs::remove_dir_all(&self.tmp_dir);
-    }
-}
+    async fn run_probes(
+        &mut self,
+        state: &AppState,
+        context: &ProbeContext,
+        url: &str,
+        timeout_ms: u64,
+        concurrency: usize,
+        started: Instant,
+    ) -> BatchStats {
+        let mut pending = std::mem::take(&mut self.targets).into_iter();
+        let mut tasks = JoinSet::new();
+        let mut stats = BatchStats::default();
 
-async fn wait_api_ready(api_base: &str, overall: Duration) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(400))
-        .no_proxy()
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let deadline = Instant::now() + overall;
-    let url = format!("{api_base}/proxies");
-    while Instant::now() < deadline {
-        if let Ok(r) = client.get(&url).send().await {
-            if r.status().is_success() {
-                return true;
-            }
+        // 只提交一个并发窗口，立即进入结果接收循环。
+        // 不要先 acquire permit 直到提交完全部任务，那会把已完成结果留在队列里。
+        for node in pending.by_ref().take(concurrency.clamp(1, MAX_CONCURRENCY)) {
+            spawn_probe(&mut tasks, context, node, url, timeout_ms);
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    false
-}
-
-fn pick_free_port() -> Option<u16> {
-    let s = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-    let p = s.local_addr().ok()?.port();
-    drop(s);
-    Some(p)
-}
-
-/// 极简 URL path/query 编码（只编码非 unreserved 字符）。
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-fn resolve_singbox_binary(state: &AppState) -> PathBuf {
-    let configured = state
-        .config
-        .try_read()
-        .map(|c| c.core_binary.clone())
-        .unwrap_or_default();
-    if !configured.as_os_str().is_empty() {
-        let abs = if configured.is_absolute() {
-            configured.clone()
-        } else if let Ok(exe) = std::env::current_exe() {
-            exe.parent()
-                .map(|p| p.join(&configured))
-                .unwrap_or(configured.clone())
-        } else {
-            configured.clone()
-        };
-        if abs.exists() {
-            return abs;
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in ["sing-box.exe", "sing-box"] {
-                let p = dir.join(name);
-                if p.exists() {
-                    return p;
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok((id, latency)) => {
+                    stats.completed += 1;
+                    stats.successful += usize::from(latency.is_some());
+                    stats
+                        .first_result_ms
+                        .get_or_insert_with(|| started.elapsed().as_millis());
+                    {
+                        let mut profile = state.profile.write().await;
+                        if let Some(node) = profile.nodes.iter_mut().find(|n| n.id == id) {
+                            node.latency = latency;
+                            node.latency_status =
+                                Some(if latency.is_some() { "ok" } else { "timeout" }.to_string());
+                        }
+                    }
+                    self.claims.release(&id);
+                    emit(state, &id, latency);
                 }
+                Err(e) => state.log_with("latency", "error", format!("测速任务异常: {e}")),
             }
-            let p = dir.join("core").join("sing-box.exe");
-            if p.exists() {
-                return p;
+            if let Some(node) = pending.next() {
+                spawn_probe(&mut tasks, context, node, url, timeout_ms);
             }
         }
+        stats
     }
-    state.data_dir.join("..").join("sing-box.exe")
 }
 
-/// 测试单个节点。
-pub async fn test_one(state: &AppState, id: &str) -> AppResult<()> {
-    let node = {
-        let p = state.profile.read().await;
-        p.nodes
-            .iter()
-            .find(|n| n.id == id)
-            .cloned()
-            .ok_or_else(|| AppError(anyhow::anyhow!("节点不存在: {}", id)))?
-    };
-    let (url, timeout) = {
-        let c = state.config.read().await;
-        (c.latency_test_url.clone(), c.latency_timeout)
-    };
-    let latency = measure(state, &node, &url, timeout).await;
-    write_back(state, id, latency, true).await;
-    emit(state, id, latency);
-    Ok(())
-}
-
-/// 并发测试全部节点。
-///
-/// UIF 风格：协议节点共享一个临时 core 会话，并发打 `/proxies/{tag}/delay`；
-/// 通用代理节点仍各自 reqwest。
-pub async fn test_all(state: &AppState) -> AppResult<()> {
-    let (targets, url, concurrency, timeout) = {
-        let p = state.profile.read().await;
-        let targets: Vec<Node> = p.nodes.clone();
-        let c = state.config.read().await;
-        (
-            targets,
-            c.latency_test_url.clone(),
-            c.latency_concurrency.max(1),
-            c.latency_timeout,
-        )
-    };
-    if targets.is_empty() {
-        state.log_with("latency", "info", "测试全部延迟: 无节点，跳过");
-        return Ok(());
-    }
-
-    // 拆分：协议节点走 UIF session；socks/http 走 proxy_measure
-    let mut protocol: Vec<Node> = Vec::new();
-    let mut plain: Vec<Node> = Vec::new();
-    for n in targets {
-        match n.kind.as_str() {
-            "socks" | "socks5" | "http" | "https" => plain.push(n),
-            _ => protocol.push(n),
-        }
-    }
-
-    // UIF 一次起 core 塞全部 outbound；并发 delay 请求数仍限制
-    let concurrency = concurrency.min(16);
-    state.log_with(
-        "latency",
-        "info",
-        format!(
-            "开始测试全部延迟(UIF): 协议节点={} 代理节点={} 并发={} 超时={}ms URL={}",
-            protocol.len(),
-            plain.len(),
-            concurrency,
-            timeout,
-            url
-        ),
-    );
-    let started = Instant::now();
-    let mut results: Vec<(String, Option<u32>)> = Vec::new();
-
-    // 1) 协议节点：一个临时 core；每完成一个立即 write_back + emit，前端逐个刷新
-    //    注入列表需 expand detour 链，否则前置节点缺失时 delay 会失败/测的不是真链路
-    if !protocol.is_empty() {
-        let all_nodes = {
-            let p = state.profile.read().await;
-            p.nodes.clone()
-        };
-        let session_nodes = render::expand_with_detours(&all_nodes, &protocol);
-        if let Some(session) = UifProbeSession::start(state, &session_nodes).await {
-            let session = Arc::new(session);
-            let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-            let mut set = tokio::task::JoinSet::new();
-            for node in protocol {
-                let url = url.clone();
-                let sess = session.clone();
-                let permit = sem
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|e| AppError(anyhow::anyhow!(e)))?;
-                let timeout_ms = timeout;
-                set.spawn(async move {
-                    let lat = sess.delay(&node.id, &url, timeout_ms).await;
-                    drop(permit);
-                    (node.id.clone(), lat)
-                });
-            }
-            while let Some(joined) = set.join_next().await {
-                if let Ok((id, lat)) = joined {
-                    write_back(state, &id, lat, false).await;
-                    emit(state, &id, lat);
-                    results.push((id, lat));
-                }
-            }
-            // 拆 Arc 关停
-            if let Ok(sess) = Arc::try_unwrap(session) {
-                sess.shutdown().await;
-            }
-        } else {
-            // core 起不来：全部记失败（仍逐个推送，前端能立刻看到“不可达”）
-            state.log_with(
-                "latency",
-                "warn",
-                "UIF 临时 core 启动失败，协议节点测速全部标记不可达",
-            );
-            for n in protocol {
-                write_back(state, &n.id, None, false).await;
-                emit(state, &n.id, None);
-                results.push((n.id, None));
-            }
-        }
-    }
-
-    // 2) 通用代理节点：同样测完一个推一个
-    if !plain.is_empty() {
-        let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let mut set = tokio::task::JoinSet::new();
-        for node in plain {
-            let url = url.clone();
-            let permit = sem
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| AppError(anyhow::anyhow!(e)))?;
-            set.spawn(async move {
-                let lat = proxy_measure(&node, &url, Duration::from_millis(timeout)).await;
-                drop(permit);
-                (node.id.clone(), lat)
-            });
-        }
-        while let Some(joined) = set.join_next().await {
-            if let Ok((id, lat)) = joined {
-                write_back(state, &id, lat, false).await;
-                emit(state, &id, lat);
-                results.push((id, lat));
-            }
-        }
-    }
-
-    // 全部完成后统一落盘一次（过程中只改内存 + WS 推送，避免 50 次写盘）
-    {
-        let p = state.profile.read().await;
-        let _ = crate::config::manager::save_profile(&state.data_dir, &p);
-    }
-    let ok = results.iter().filter(|(_, l)| l.is_some()).count();
-    let failed = results.len() - ok;
-    state.log_with(
-        "latency",
-        "info",
-        format!(
-            "全部测速完成: 耗时={}ms ok={} 失败={}",
-            started.elapsed().as_millis(),
-            ok,
-            failed
-        ),
-    );
-    Ok(())
-}
-
-async fn write_back(state: &AppState, id: &str, latency: Option<u32>, persist: bool) {
-    let mut p = state.profile.write().await;
-    if let Some(n) = p.nodes.iter_mut().find(|n| &n.id == id) {
-        n.latency = latency;
-        n.latency_status = Some(match latency {
-            Some(_) => "ok".to_string(),
-            None => "timeout".to_string(),
-        });
-    }
-    if persist {
-        let _ = crate::config::manager::save_profile(&state.data_dir, &p);
-    }
+fn spawn_probe(
+    tasks: &mut JoinSet<(String, Option<u32>)>,
+    context: &ProbeContext,
+    node: Node,
+    url: &str,
+    timeout_ms: u64,
+) {
+    let method = context.method_for(&node);
+    let url = url.to_string();
+    tasks.spawn(async move {
+        let latency = method.measure(&node, &url, timeout_ms).await;
+        (node.id, latency)
+    });
 }
 
 fn emit(state: &AppState, id: &str, latency: Option<u32>) {
     let message = match latency {
-        Some(ms) => format!("{} ms", ms),
+        Some(ms) => format!("{ms} ms"),
         None => "超时/不可达".to_string(),
     };
     state.emit(AppEvent::Latency {
@@ -517,5 +226,8 @@ fn emit(state: &AppState, id: &str, latency: Option<u32>) {
         message: message.clone(),
     });
     let level = if latency.is_some() { "info" } else { "warn" };
-    state.log_with("latency", level, format!("节点测速 {}: {}", id, message));
+    state.log_with("latency", level, format!("节点测速 {id}: {message}"));
 }
+
+#[cfg(test)]
+mod tests;

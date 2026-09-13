@@ -201,6 +201,7 @@ fn normalize_kind(kind: &str) -> &str {
         "vless" => "vless",
         "trojan" => "trojan",
         "hysteria" | "hysteria2" => "hysteria2",
+        "anytls" => "anytls",
         "tuic" => "tuic",
         "wireguard" => "wireguard",
         "ssh" => "ssh",
@@ -588,6 +589,30 @@ fn node_to_outbound_base(node: &Node) -> Value {
                 h["tls"]["server_name"] = json!(sni);
             }
             h
+        }
+        "anytls" => {
+            // AnyTLS 协议同样强制要求 TLS，行为与 hysteria2 类似：默认 insecure=true
+            // （伪装 SNI 时严格校验必失败），用户可在节点编辑里关掉。
+            let mut a = json!({
+                "type": "anytls",
+                "server": node.server,
+                "server_port": node.port,
+                "password": node.password.clone().unwrap_or_default(),
+                "tls": {
+                    "enabled": true,
+                    "insecure": node.skip_cert_verify.unwrap_or(true),
+                },
+            });
+            if let Some(sni) = node.sni.as_ref().filter(|s| !s.is_empty()) {
+                a["tls"]["server_name"] = json!(sni);
+            }
+            if let Some(fp) = node.fingerprint.as_ref().filter(|s| !s.is_empty()) {
+                a["tls"]["utls"] = json!({ "enabled": true, "fingerprint": fp });
+            }
+            if let Some(alpn) = node.alpn.as_ref().filter(|v| !v.is_empty()) {
+                a["tls"]["alpn"] = json!(alpn);
+            }
+            a
         }
         other => json!({
             "type": other,

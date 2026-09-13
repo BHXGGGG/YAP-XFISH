@@ -28,6 +28,16 @@ const types: [string, string][] = [
 const presets = ref<any[]>([])
 const presetKey = ref('')
 
+// 把规则的 outbound（可能是节点 id 哈希）反查为节点显示名。
+// 与 Chain.vue 的 nameOf 保持一致：direct/block 直接显示原字面量；
+// 找不到的 id 仍保留原字面量，便于排查悬空 tag。
+function nameOf(id: string | null | undefined): string {
+  if (!id) return '—'
+  if (id === 'direct' || id === 'block') return id
+  const n = (store.profile.nodes || []).find((x: any) => x.id === id)
+  return n?.name || id
+}
+
 async function loadPresets() {
   try { presets.value = await api.rulePresets() } catch {}
 }
@@ -90,7 +100,7 @@ async function del(id: string) {
       <select v-model="presetKey">
         <option value="">— 选择预设 —</option>
         <option v-for="p in presets" :key="p.id" :value="p.id">
-          {{ p.name }}（{{ p.type }}:{{ p.payload }} → {{ p.outbound }}）
+          {{ p.name }}（{{ p.type }}:{{ p.payload }} → {{ nameOf(p.outbound) }}）
         </option>
       </select>
       <button @click="addPreset">添加预设</button>
@@ -99,7 +109,7 @@ async function del(id: string) {
     <ul class="list">
       <li v-for="r in store.rules" :key="r.id">
         <div>
-          <div class="name">{{ r.name }} <span class="tag">{{ r.type }}</span> → <b>{{ r.outbound }}</b></div>
+          <div class="name">{{ r.name }} <span class="tag">{{ r.type }}</span> → <b>{{ nameOf(r.outbound) }}</b></div>
           <div class="meta">{{ r.payload }}</div>
         </div>
         <button @click="del(r.id)">删除</button>

@@ -4,6 +4,8 @@ use crate::config::manager as cfgmgr;
 use crate::config::render;
 use crate::core::process;
 use crate::error::AppResult;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -18,8 +20,26 @@ struct CoreInner {
     binary: PathBuf,
     config_path: PathBuf,
     child: Mutex<Option<tokio::process::Child>>,
+    /// 只记录已交给运行核心的出站配置，测速时避免复用尚未应用的旧节点。
+    probe_config: Mutex<Option<ProbeConfig>>,
     /// 用于把核心的 stdout/stderr 转发为日志事件（网页日志面板可见）。
     event_tx: tokio::sync::broadcast::Sender<AppEvent>,
+}
+
+struct ProbeConfig {
+    outbounds_fingerprint: u64,
+    port: u16,
+    secret: String,
+}
+
+fn outbounds_fingerprint(profile: &AppProfile) -> u64 {
+    let mut hash = DefaultHasher::new();
+    for node in &profile.nodes {
+        render::node_to_outbound_in_profile(node, profile)
+            .to_string()
+            .hash(&mut hash);
+    }
+    hash.finish()
 }
 
 impl CoreManager {
@@ -33,6 +53,7 @@ impl CoreManager {
                 binary,
                 config_path,
                 child: Mutex::new(None),
+                probe_config: Mutex::new(None),
                 event_tx,
             }),
         }
@@ -80,6 +101,27 @@ impl CoreManager {
             Some(child) => child.id().is_some(),
             None => false,
         }
+    }
+
+    /// 当前节点配置与已启动核心一致时，允许测速复用其 Clash API。
+    /// 返回实际启动时的端口和密钥，不受尚未成功应用的设置变更影响。
+    pub async fn probe_api(&self, profile: &AppProfile) -> Option<(u16, String)> {
+        if !self.is_running().await {
+            return None;
+        }
+        let fingerprint = outbounds_fingerprint(profile);
+        let applied = self.inner.probe_config.lock().await;
+        let applied = applied.as_ref()?;
+        (applied.outbounds_fingerprint == fingerprint)
+            .then(|| (applied.port, applied.secret.clone()))
+    }
+
+    async fn remember_probe_config(&self, profile: &AppProfile, cfg: &AppConfig) {
+        *self.inner.probe_config.lock().await = Some(ProbeConfig {
+            outbounds_fingerprint: outbounds_fingerprint(profile),
+            port: cfg.clash_api_port,
+            secret: cfg.api_secret.clone(),
+        });
     }
 
     /// 渲染配置并启动核心。若核心已运行则跳过。
@@ -153,6 +195,8 @@ impl CoreManager {
                 }
             }
         }
+
+        self.remember_probe_config(profile, app_cfg).await;
 
         // gvisor 启动失败回退：若启用 TUN，且 sing-box 在 1.5s 内已死亡，
         // 重写 config.json 中 TUN 的 stack=system 并重启一次。
@@ -239,6 +283,7 @@ impl CoreManager {
     }
 
     pub async fn stop(&self) -> AppResult<()> {
+        *self.inner.probe_config.lock().await = None;
         let mut guard = self.inner.child.lock().await;
         if let Some(mut child) = guard.take() {
             let _ = child.start_kill();
@@ -300,6 +345,7 @@ impl CoreManager {
         match self.spawn_captured(&self.inner.binary).await {
             Ok(child) => {
                 *self.inner.child.lock().await = Some(child);
+                self.remember_probe_config(profile, app_cfg).await;
                 Ok(())
             }
             Err(e) => {
@@ -374,5 +420,45 @@ fn log_level_of(line: &str) -> String {
         "warn".to_string()
     } else {
         "info".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::model::{Node, ProxyMode};
+
+    #[test]
+    fn probe_config_ignores_latency_and_node_selection() {
+        let mut profile = AppProfile {
+            nodes: vec![Node {
+                id: "node".into(), kind: "shadowsocks".into(), server: "127.0.0.1".into(),
+                port: 1234, password: Some("first".into()), ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let original = outbounds_fingerprint(&profile);
+        profile.nodes[0].latency = Some(50);
+        profile.nodes[0].latency_status = Some("ok".into());
+        profile.mode = ProxyMode::Rule;
+        profile.selected_node = Some("node".into());
+        assert_eq!(outbounds_fingerprint(&profile), original);
+        profile.nodes[0].password = Some("changed".into());
+        assert_ne!(outbounds_fingerprint(&profile), original);
+    }
+
+    #[test]
+    fn probe_config_detects_changed_detour_credentials() {
+        let entry = Node {
+            id: "entry".into(), kind: "shadowsocks".into(), server: "127.0.0.1".into(),
+            port: 1234, password: Some("first".into()), ..Default::default()
+        };
+        let mut exit = entry.clone();
+        exit.id = "exit".into();
+        exit.detour = Some("entry".into());
+        let mut profile = AppProfile { nodes: vec![exit, entry], ..Default::default() };
+        let original = outbounds_fingerprint(&profile);
+        profile.nodes[1].password = Some("updated".into());
+        assert_ne!(outbounds_fingerprint(&profile), original);
     }
 }

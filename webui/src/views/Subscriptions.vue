@@ -5,14 +5,30 @@ import { api } from '../api'
 
 const emit = defineEmits<{ (e: 'refresh'): void }>()
 
+// 「添加后立即启用」默认值的规则：
+//   - 当前已有至少一个启用订阅 → 默认 false（避免一次性启用多个，新订阅先以停用状态添加）
+//   - 当前没有任何启用订阅 → 默认 true（首次接入 / 全部停用后，让新订阅直接生效）
+function defaultEnabled(): boolean {
+  return !(store.subscriptions || []).some((s: any) => s.enabled)
+}
+
 const form = reactive({
   name: '',
   url: '',
   interval: 'every6_hours',
-  enabled: true,
+  enabled: defaultEnabled(),
   uaPreset: 'default',
   userAgent: '',
 })
+
+// 订阅列表变化（添加/删除/切换启用）时同步表单默认值。
+// 防止 UI 上看到「启用」打勾的「幽灵」状态，或下次添加时错误地启用。
+watch(
+  () => (store.subscriptions || []).map((s: any) => `${s.id}:${s.enabled ? 1 : 0}`).join('|'),
+  () => {
+    if (!form.url) form.enabled = defaultEnabled()
+  },
+)
 
 // 预置 UA：覆盖 link123 等会拦截浏览器 UA 的订阅站。
 // 参考 uif / clash-party / v2rayN / sing-box 默认 UA。

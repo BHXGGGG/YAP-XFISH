@@ -159,6 +159,24 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
             n
         })
         .collect();
+    // 4.5 订阅内去重：某些机场会在同一 (kind, server, port) 上塞多个"占位"节点
+    // （如公告 / 套餐到期 / 备用 等共用假地址），它们的 name 不同但身份相同，
+    // 算出的 id 也会完全相同——sing-box 渲染时 `duplicate outbound/endpoint tag`
+    // FATAL 拒绝启动。这里给后续重复身份补 "-1" "-2" … 后缀，让它们成为独立节点；
+    // 真实节点（身份唯一）保持原 id，便于迁移期 id 仍然稳定。
+    {
+        let mut seen: std::collections::HashMap<(String, String, u16), u32> =
+            std::collections::HashMap::new();
+        for n in new_nodes.iter_mut() {
+            let key = (n.kind.clone(), n.server.clone(), n.port);
+            let counter = seen.entry(key).or_insert(0);
+            if *counter > 0 {
+                n.id.push('-');
+                n.id.push_str(&counter.to_string());
+            }
+            *counter += 1;
+        }
+    }
     // 解析到的实际节点数（无论订阅启用与否都要回写到 node_count）
     let parsed_count = new_nodes.len();
 
@@ -328,6 +346,12 @@ fn ensure_selection(p: &mut AppProfile) {
 }
 
 /// 由「订阅 ID + 节点身份」生成稳定的节点 ID，使重复更新时选中不丢。
+///
+/// 注意：hash key 包含 `name`，但**重复更新时 name 通常不变**（机场只是偶尔在
+/// 节点名里塞剩余流量/到期等可变字段，导致订阅刷新后 id 漂移）。本函数在调用
+/// 之前由「订阅内冲突去重」负责把同一 (kind, server, port) 的多个节点补上不同
+/// 序号后缀（参见 `update_subscription_inner`），因此正常情况下 name 改变也
+/// 不会让 id 漂移；本函数只承担最后一道身份计算 + 兜底。
 fn stable_node_id(sub_id: &str, n: &Node) -> String {
     let mut h = DefaultHasher::new();
     let key = format!("{}-{}-{}-{}", n.kind, n.server, n.port, n.name);

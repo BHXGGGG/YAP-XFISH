@@ -28,9 +28,10 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 | TUN | 可选；需管理员权限 |
 | 订阅 | Clash YAML / 节点链接；默认更新周期 **6 小时** |
 | 节点 | 4 列卡片；点击选中；⚡ 测速 |
-| 测速 | UIF 风格：临时 sing-box + Clash `/proxies/{tag}/delay`；无黑框、测后清理子进程 |
+| 测速 | 复用运行核心的 Clash delay API；按需创建临时核心，结果逐个显示 |
 | 协议 | SS / VMess / VLESS（含 REALITY + utls）/ Trojan / Hysteria2 / TUIC 等 |
 | 规则 | 全局 / 规则 / 直连；规则编辑与预设 |
+| 检查更新 | 设置页手动检查 GitHub 最新正式发布版，发现新版可前往发布页下载 |
 | 单实例 | 命名互斥锁 `YapXfish_SingleInstance_Mutex` |
 
 ### 托盘状态点
@@ -177,14 +178,15 @@ cargo build --release
 
 ## 测速说明
 
-当前实现参考 [UIforFreedom/UIF](https://github.com/UIforFreedom/UIF)：
+测速通过节点访问测试网址，默认 `https://www.gstatic.com/generate_204`，超时 5 秒：
 
-1. 为待测节点生成临时 sing-box 配置 + `experimental.clash_api`  
-2. 无窗口启动临时 core（`CREATE_NO_WINDOW`）  
-3. 请求 `GET /proxies/{tag}/delay`  
-4. 结束后杀进程并清理临时目录  
+1. 节点配置与正在运行的 sing-box 一致时，直接复用其 Clash `/proxies/{tag}/delay` 接口。
+2. 核心未运行或节点配置尚未应用时，参考 [UIforFreedom/UIF](https://github.com/UIforFreedom/UIF) 的方式，创建临时核心，注入待测节点及其前置链路；结束后清理进程与临时文件。
+3. 普通 HTTP/SOCKS 节点直接经自身代理请求网址；带前置的节点通过核心测试完整链路。
+4. 默认并发 50，可在设置中调整为 1–200。完成一个就推送一个结果，无需等全部节点排队或超时。
+5. 仪表盘按当前订阅页签提交待测节点；重复点击不会重复测试仍在进行中的节点。
 
-协议节点走真实出口延迟；避免残留 `sing-box.exe`。
+测速日志包含首个结果耗时和整批耗时，便于区分排队等待与节点本身的延迟。
 
 ---
 

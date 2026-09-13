@@ -210,6 +210,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// 正在更新的订阅 ID 集合，防止定时调度与手动触发并发重复更新同一订阅。
     pub updating: Arc<Mutex<HashSet<String>>>,
+    /// 正在测速的节点，避免重复点击为同一节点启动多份探测。
+    pub latency_in_flight: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -238,6 +240,7 @@ impl AppState {
             subscriptions: Arc::new(RwLock::new(subscriptions)),
             data_dir,
             updating: Arc::new(Mutex::new(HashSet::new())),
+            latency_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -386,7 +389,7 @@ pub fn exe_dir() -> PathBuf {
 /// 加载或初始化配置与配置模型。
 pub fn load_or_init(data_dir: &std::path::Path) -> AppResult<(AppConfig, AppProfile)> {
     let mut config = crate::config::manager::load_app_config(data_dir)?;
-    let profile = crate::config::manager::load_profile(data_dir)?;
+    let mut profile = crate::config::manager::load_profile(data_dir)?;
 
     // 运行时数据目录写回 config，供 render 写核心 log.output 等使用。
     let mut dirty = false;
@@ -404,5 +407,46 @@ pub fn load_or_init(data_dir: &std::path::Path) -> AppResult<(AppConfig, AppProf
         let _ = crate::config::manager::save_app_config(data_dir, &config);
     }
 
+    // 修复 v0.1.35 引入的「同一订阅内多个节点 id 重复」问题：当时为了解决
+    // 机场「剩余流量：192.89 GB」之类改名导致 id 漂移，把 name 从 stable_node_id
+    // 哈希里去掉，结果某些机场订阅里 4 条公告占位节点 (kind, server, port) 全
+    // 一样，渲染时 sing-box FATAL `duplicate outbound/endpoint tag`。
+    // v0.1.35+ 在 update_subscription_inner 里给后续重复身份补 "-1" "-2" 后缀，
+    // 但已经写盘的历史 profile 仍带重复 id——这里启动时按同规则扫描+改写一次。
+    if dedupe_duplicate_node_ids(&mut profile) {
+        let _ = crate::config::manager::save_profile(data_dir, &profile);
+    }
+
     Ok((config, profile))
+}
+
+/// 扫描并修复 profile.nodes 里的重复 id：按 `subscription_id` 分组，对组内
+/// 重复的 id 按出现顺序补 "-1" "-2" … 后缀；返回是否做了改动。
+fn dedupe_duplicate_node_ids(profile: &mut AppProfile) -> bool {
+    use std::collections::HashMap;
+    let mut changed = false;
+    // 按订阅分组（手动节点没 subscription_id 视作一个组，单独去重）
+    let groups: HashMap<String, Vec<usize>> = {
+        let mut g: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, n) in profile.nodes.iter().enumerate() {
+            g.entry(n.subscription_id.clone().unwrap_or_else(|| "__manual__".into()))
+                .or_default()
+                .push(i);
+        }
+        g
+    };
+    for (_, idxs) in groups {
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        for i in idxs {
+            let id = profile.nodes[i].id.clone();
+            let counter = seen.entry(id).or_insert(0);
+            if *counter > 0 {
+                profile.nodes[i].id.push('-');
+                profile.nodes[i].id.push_str(&counter.to_string());
+                changed = true;
+            }
+            *counter += 1;
+        }
+    }
+    changed
 }
