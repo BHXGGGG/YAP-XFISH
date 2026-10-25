@@ -24,6 +24,8 @@ struct CoreInner {
     probe_config: Mutex<Option<ProbeConfig>>,
     /// 用于把核心的 stdout/stderr 转发为日志事件（网页日志面板可见）。
     event_tx: tokio::sync::broadcast::Sender<AppEvent>,
+    /// 最近一条 FATAL/panic 输出（已去 ANSI），核心意外退出时用来判断原因。
+    last_fatal: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 struct ProbeConfig {
@@ -55,6 +57,7 @@ impl CoreManager {
                 child: Mutex::new(None),
                 probe_config: Mutex::new(None),
                 event_tx,
+                last_fatal: Arc::new(std::sync::Mutex::new(None)),
             }),
         }
     }
@@ -95,10 +98,16 @@ impl CoreManager {
         configured.clone()
     }
 
+    /// 用 try_wait 判活：tokio 的 child.id() 在进程退出但未被 wait 前仍返回 Some，
+    /// 会把已 FATAL 退出的核心误判为运行中。已退出则顺手清掉 child。
     pub async fn is_running(&self) -> bool {
-        let guard = self.inner.child.lock().await;
-        match &*guard {
-            Some(child) => child.id().is_some(),
+        let mut guard = self.inner.child.lock().await;
+        match guard.as_mut().map(|c| c.try_wait()) {
+            Some(Ok(Some(_))) => {
+                *guard = None;
+                false
+            }
+            Some(_) => true,
             None => false,
         }
     }
@@ -255,10 +264,10 @@ impl CoreManager {
                 match process::spawn(&binary2, &config_path2).await {
                     Ok(mut child2) => {
                         if let Some(out) = child2.stdout.take() {
-                            spawn_log_reader(out, event_tx.clone());
+                            spawn_log_reader(out, event_tx.clone(), child_arc.last_fatal.clone());
                         }
                         if let Some(err) = child2.stderr.take() {
-                            spawn_log_reader(err, event_tx.clone());
+                            spawn_log_reader(err, event_tx.clone(), child_arc.last_fatal.clone());
                         }
                         // 替换 child
                         let mut guard = child_arc.child.lock().await;
@@ -319,10 +328,23 @@ impl CoreManager {
     /// 带回滚的 reload：备份旧配置 → 渲染写入 → 检查内核 → 重启。
     /// 若内核缺失或启动失败，自动恢复备份的 config.json 并返回错误（调用方据此回滚 profile）。
     pub async fn reload_safe(&self, profile: &AppProfile, app_cfg: &AppConfig) -> AppResult<()> {
-        let backup = cfgmgr::backup_config(&self.inner.config_path).ok().flatten();
-
         let rendered = render::render(profile, app_cfg);
         let s = serde_json::to_string_pretty(&rendered)?;
+
+        // 配置与正在运行的完全一致（如订阅定时更新但内容没变）：不重启核心。
+        // 重启会让 rule-set 重新初始化，网络差时可能 FATAL 退出。
+        if self.is_running().await
+            && std::fs::read_to_string(&self.inner.config_path).ok().as_deref() == Some(s.as_str())
+        {
+            let _ = self.inner.event_tx.send(AppEvent::Log {
+                level: "info".into(),
+                source: "core".into(),
+                message: "配置未变化，跳过核心重启".into(),
+            });
+            return Ok(());
+        }
+
+        let backup = cfgmgr::backup_config(&self.inner.config_path).ok().flatten();
         if let Some(parent) = self.inner.config_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -360,14 +382,20 @@ impl CoreManager {
 
     /// 拉起核心并捕获其 stdout/stderr 转发为日志事件（网页日志面板可见）。
     async fn spawn_captured(&self, binary: &Path) -> AppResult<tokio::process::Child> {
+        *self.inner.last_fatal.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut child = process::spawn(binary, &self.inner.config_path).await?;
         if let Some(out) = child.stdout.take() {
-            spawn_log_reader(out, self.inner.event_tx.clone());
+            spawn_log_reader(out, self.inner.event_tx.clone(), self.inner.last_fatal.clone());
         }
         if let Some(err) = child.stderr.take() {
-            spawn_log_reader(err, self.inner.event_tx.clone());
+            spawn_log_reader(err, self.inner.event_tx.clone(), self.inner.last_fatal.clone());
         }
         Ok(child)
+    }
+
+    /// 取走最近一条 FATAL 输出（取后清空，避免重复提示）。
+    pub fn take_last_fatal(&self) -> Option<String> {
+        self.inner.last_fatal.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     #[allow(dead_code)]
@@ -385,6 +413,7 @@ impl CoreManager {
 fn spawn_log_reader(
     stream: impl AsyncRead + Unpin + Send + 'static,
     tx: tokio::sync::broadcast::Sender<AppEvent>,
+    last_fatal: Arc<std::sync::Mutex<Option<String>>>,
 ) {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stream);
@@ -397,6 +426,11 @@ fn spawn_log_reader(
                     let l = line.trim_end_matches(['\r', '\n']).to_string();
                     if !l.is_empty() {
                         let level = log_level_of(&l);
+                        let upper = l.to_uppercase();
+                        if upper.contains("FATAL") || upper.contains("PANIC") {
+                            *last_fatal.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(strip_ansi(&l));
+                        }
                         crate::system::log_file::append("core", &level, &l);
                         let _ = tx.send(AppEvent::Log {
                             level,
@@ -409,6 +443,34 @@ fn spawn_log_reader(
             }
         }
     });
+}
+
+/// 去掉 sing-box 输出里的 ANSI 颜色码（\x1b[...m）。
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c2 in chars.by_ref() {
+                if c2.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// FATAL 是否为配置错误（而非网络问题）。网络类：规则集下载失败、超时、连接失败。
+pub fn is_config_error(fatal: &str) -> bool {
+    let l = fatal.to_lowercase();
+    let network = [
+        "timeout", "timed out", "connection", "connectex", "refused", "wsarecv", "dial",
+        "handshake", "no such host", "eof",
+    ];
+    !network.iter().any(|k| l.contains(k))
 }
 
 /// 根据核心日志行内容推断日志级别（sing-box 日志形如 `FATAL[...]` / `INFO ...` / `WARN ...`）。
@@ -445,6 +507,14 @@ mod tests {
         assert_eq!(outbounds_fingerprint(&profile), original);
         profile.nodes[0].password = Some("changed".into());
         assert_ne!(outbounds_fingerprint(&profile), original);
+    }
+
+    #[test]
+    fn classifies_fatal_lines() {
+        let net = strip_ansi("\x1b[31mFATAL\x1b[0m[0015] start service: initialize rule-set[1]: initial rule-set: geosite-cn: Get \"https://x\": net/http: TLS handshake timeout");
+        assert!(net.starts_with("FATAL[0015]"));
+        assert!(!is_config_error(&net));
+        assert!(is_config_error("FATAL[0000] decode config at ./config.json: outbounds[2].method: unknown method"));
     }
 
     #[test]

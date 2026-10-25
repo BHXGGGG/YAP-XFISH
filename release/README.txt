@@ -1,4 +1,4 @@
-YAP-XFISH v0.1.41 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.1.42 —— Windows Sing-box 代理客户端（自包含分发）
 
 【本版更新】
 - 设置页增加「检查更新」按钮，手动查询 GitHub 最新正式版，并在有新版时提供发布页下载入口。
@@ -65,5 +65,5 @@ YAP-XFISH v0.1.41 —— Windows Sing-box 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.1.41
+- YAP-XFISH v0.1.42
 - 本包附带 sing-box v1.13.14（windows/amd64，与 yap-xfish.exe 同目录）

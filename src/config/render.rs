@@ -55,7 +55,7 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
 
     let mut route = json!({
         "rules": all_rules,
-        "final": final_outbound,
+        "final": final_outbound.clone(),
         "auto_detect_interface": true,
         // sing-box 1.12+ 要求显式指定域名解析器（否则 1.13 FATAL）：指向本地 DNS server tag
         "default_domain_resolver": { "server": "local" },
@@ -83,7 +83,8 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
                     "tag": tag,
                     "format": "binary",
                     "url": url,
-                    "download_detour": "direct"
+                    // 国内直连 raw.githubusercontent.com 常超时，首次下载失败会让核心 FATAL 退出；走当前出站更稳
+                    "download_detour": final_outbound.clone()
                 }));
             }
         }
@@ -99,13 +100,13 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
 
     // 核心日志默认落盘到 data/logs/sing-box.log，便于排查 TUN/路由问题。
     // output 用绝对路径，避免 cwd 变化导致写丢。
+    let data_dir = if cfg.data_dir.as_os_str().is_empty() {
+        crate::app::default_data_dir()
+    } else {
+        cfg.data_dir.clone()
+    };
     let core_log_path = {
-        let dir = if cfg.data_dir.as_os_str().is_empty() {
-            crate::app::default_data_dir()
-        } else {
-            cfg.data_dir.clone()
-        };
-        let logs = dir.join("logs");
+        let logs = data_dir.join("logs");
         let _ = std::fs::create_dir_all(&logs);
         logs.join("sing-box.log")
             .to_string_lossy()
@@ -153,7 +154,14 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
         ],
         "outbounds": outbounds,
         "route": route,
-        "experimental": { "clash_api": clash_api }
+        "experimental": {
+            "clash_api": clash_api,
+            // 持久化远程 rule_set：重启核心直接读缓存，不再每次联网下载（下载失败 = 核心 FATAL）
+            "cache_file": {
+                "enabled": true,
+                "path": data_dir.join("cache.db").to_string_lossy().replace('\\', "/")
+            }
+        }
     });
 
     if cfg.enable_tun {
