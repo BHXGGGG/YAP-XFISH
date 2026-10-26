@@ -141,8 +141,7 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
             ],
             // TUN 场景优先 local，避免 DoH 超时拖垮全部建连。
             "final": "local",
-            "strategy": "prefer_ipv4",
-            "independent_cache": true
+            "strategy": "prefer_ipv4"
         },
         "inbounds": [
             {

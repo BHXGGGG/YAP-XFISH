@@ -68,6 +68,7 @@ proxy_rs.pdb
 /release/*.zip
 /release/*.exe
 /release/**/*.exe
+/release/**/*.dll
 
 # ===== Hermes 本地会话/计划（不属于仓库） =====
 /.hermes/

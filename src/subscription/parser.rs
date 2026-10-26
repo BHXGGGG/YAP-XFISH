@@ -525,7 +525,7 @@ fn parse_hy2(s: &str) -> Option<Node> {
 
 /// v2rayN 风格的 anytls 链接：`anytls://password@host:port?sni=...&insecure=1&fp=chrome&alpn=h2,http/1.1#name`。
 ///
-/// anytls（AnyTLS）协议：sing-box 1.13.14 接受 `type: "anytls"` outbound，必须启用 TLS，
+/// anytls（AnyTLS）协议：sing-box 1.13+ 接受 `type: "anytls"` outbound，必须启用 TLS，
 /// 与 hysteria2 行为类似，常用伪装 SNI + insecure=true。详见：
 /// https://github.com/anytls/anytls-go 与 sing-box outbound 文档。
 fn parse_anytls(s: &str) -> Option<Node> {
