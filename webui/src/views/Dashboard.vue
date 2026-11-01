@@ -124,13 +124,23 @@ function connHost(c: any): string {
   const meta = c?.metadata || {}
   return meta.host || meta.destinationIP || meta.remoteDestination || '—'
 }
+// sing-box 出站 tag 就是节点 id，连接列表里显示成节点名
+const nodeNameById = computed(() => {
+  const m = new Map<string, string>()
+  for (const n of store.profile.nodes || []) m.set(n.id, n.name)
+  return m
+})
+function tagName(tag: string): string {
+  return nodeNameById.value.get(tag) || tag
+}
 function connRule(c: any): string {
-  return c?.rule || c?.rulePayload || '—'
+  const r = c?.rule || c?.rulePayload || '—'
+  return r.replace(/route\(([^)]+)\)/g, (_: string, t: string) => `route(${tagName(t)})`)
 }
 function connChains(c: any): string {
   const ch = c?.chains
-  if (Array.isArray(ch) && ch.length) return ch.join(' → ')
-  return c?.outbound || '—'
+  if (Array.isArray(ch) && ch.length) return ch.map(tagName).join(' → ')
+  return c?.outbound ? tagName(c.outbound) : '—'
 }
 
 onMounted(() => {
