@@ -113,8 +113,9 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
 
     // 2. 下载
     let raw = match fetcher::fetch_raw(&sub_url, sub_ua.as_deref()).await {
-        Ok(r) => {
+        Ok((r, meta)) => {
             state.log_with("sub", "info", format!("下载成功: {} 字节", r.len()));
+            apply_meta(state, &sub_id, meta).await;
             r
         }
         Err(e) => {
@@ -317,6 +318,30 @@ async fn record(state: &AppState, id: &str, status: UpdateStatus, count: usize, 
             }
         }
         let _ = save_subscriptions(&state.data_dir, &subs);
+    }
+}
+
+/// 写入订阅响应头信息：自动名字替换为机场名，记录流量 / 到期时间。
+async fn apply_meta(state: &AppState, id: &str, meta: fetcher::SubMeta) {
+    let mut subs = state.subscriptions.write().await;
+    let Some(s) = subs.iter_mut().find(|s| s.id == id) else { return };
+    let mut changed = false;
+    if s.name_auto {
+        if let Some(name) = meta.name {
+            state.log_with("sub", "info", format!("订阅名字已自动设为: {name}"));
+            s.name = name;
+            s.name_auto = false;
+            changed = true;
+        }
+    }
+    if meta.userinfo.is_some() && s.userinfo != meta.userinfo {
+        s.userinfo = meta.userinfo;
+        changed = true;
+    }
+    if changed {
+        let _ = save_subscriptions(&state.data_dir, &subs);
+        // 名字 / 流量变化推给前端（单条进度事件不带这些字段）
+        state.emit(AppEvent::SubscriptionsRefresh { subscriptions: subs.clone() });
     }
 }
 

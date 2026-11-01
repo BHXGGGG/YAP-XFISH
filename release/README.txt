@@ -1,13 +1,16 @@
-YAP-XFISH v0.1.44 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.1.45 —— Windows Sing-box 代理客户端（自包含分发）
 
 【本版更新】
-- 订阅更新只在节点连接参数、选中节点或规则真正变化时才重启核心。
-  「剩余流量 / 套餐到期」等信息节点改名、节点顺序变化不再触发重启，
-  避免 TUN 短暂断开导致新建连接漏到直连（出口 IP 变成本机 IP）。
-- 核心重启时弹出 Windows 系统通知。
-- 规则出站可选「proxy」，自动跟随当前选中节点；精确规则自动排在 GeoSite/GeoIP 前面；
-  重复添加同一规则只更新出站，不再重复。
-- 订阅页新增概览（订阅数、节点数、下次自动更新时间），可直接修改更新周期。
+- 添加订阅时名称留空，会自动使用机场返回的订阅名（如「一分机场」「SharkCloud」），
+  与 FlClash / Clash Verge 一致，读取响应头 Content-Disposition。手动起过的名字不会被覆盖。
+- 订阅卡片显示已用流量 / 总流量进度条和到期时间（读取响应头 Subscription-Userinfo）。
+- 节点正文仍按原 User-Agent 拉取，格式不变；机场只对 Clash 系 UA 返回上述信息时，
+  会额外请求一次只读取响应头。
+
+【v0.1.44】
+- 订阅更新只在节点连接参数、选中节点或规则真正变化时才重启核心，
+  避免 TUN 短暂断开导致新建连接漏到直连。核心重启时弹出 Windows 系统通知。
+- 规则出站可选「proxy」，自动跟随当前选中节点；精确规则自动排在 GeoSite/GeoIP 前面。
 
 【使用】
 1. 把本 zip 解压到任意目录（例如 D:\YAP-XFISH）。
@@ -58,5 +61,5 @@ YAP-XFISH v0.1.44 —— Windows Sing-box 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.1.44
+- YAP-XFISH v0.1.45
 - 本包附带 sing-box v1.14.4（windows/amd64，与 yap-xfish.exe 同目录；libcronet.dll 供 naive 协议使用）

@@ -433,13 +433,12 @@ pub async fn add_subscription(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddSubscriptionReq>,
 ) -> AppResult<Json<Subscription>> {
-    let name = {
-        let n = req.name.trim();
-        if n.is_empty() {
-            default_subscription_name_from_url(&req.url)
-        } else {
-            n.to_string()
-        }
+    // 名字留空：先按 URL 生成占位名，首次更新时换成订阅响应头里的机场名。
+    let name_auto = req.name.trim().is_empty();
+    let name = if name_auto {
+        default_subscription_name_from_url(&req.url)
+    } else {
+        req.name.trim().to_string()
     };
     let sub = Subscription {
         id: gen_id(),
@@ -452,6 +451,8 @@ pub async fn add_subscription(
         last_status: UpdateStatus::Idle,
         last_message: String::new(),
         node_count: 0,
+        name_auto,
+        userinfo: None,
     };
     {
         let mut subs = state.subscriptions.write().await;
@@ -571,6 +572,9 @@ pub async fn update_subscription_settings(
             None => return Err(AppError(anyhow::anyhow!("订阅不存在: {}", id))),
         };
         if let Some(v) = req.name {
+            if v != sub.name {
+                sub.name_auto = false;
+            }
             sub.name = v;
         }
         if let Some(v) = req.url {

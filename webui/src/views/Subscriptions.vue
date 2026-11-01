@@ -98,10 +98,9 @@ async function load() {
 async function add() {
   if (!form.url) { toast('请填写订阅 URL'); return }
   try {
-    // 名称未填：去掉 https:// 或 http:// 后取前 7 个字符（与后端规则一致）
-    const name = (form.name || '').trim() || defaultSubNameFromUrl(form.url)
+    // 名称留空交给后端：先用 URL 占位，首次更新时换成订阅响应头里的机场名
     const added = await api.addSubscription({
-      name,
+      name: (form.name || '').trim(),
       url: form.url,
       interval: form.interval,
       enabled: form.enabled,
@@ -118,12 +117,27 @@ async function add() {
   } catch (e: any) { toast(e.message) }
 }
 
-/** 订阅名未填时：去掉 http(s):// 后取前 7 个字符 */
-function defaultSubNameFromUrl(url: string): string {
-  const t = (url || '').trim()
-  const rest = t.replace(/^https?:\/\//i, '').replace(/^\/+/, '')
-  const name = [...rest].slice(0, 7).join('')
-  return name || '订阅'
+function fmtBytes(n: number) {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
+  return (i ? n.toFixed(n >= 100 ? 0 : 1) : n) + ' ' + u[i]
+}
+
+/** Subscription-Userinfo → 「已用 12.3 GB / 60 GB · 到期 2026-12-07」 */
+function usageText(info: any) {
+  if (!info) return ''
+  const used = (Number(info.upload) || 0) + (Number(info.download) || 0)
+  const total = Number(info.total) || 0
+  let s = '已用 ' + fmtBytes(used) + (total ? ' / ' + fmtBytes(total) : '')
+  s += info.expire ? ' · 到期 ' + new Date(info.expire * 1000).toLocaleDateString() : ' · 长期有效'
+  return s
+}
+
+function usagePct(info: any) {
+  const total = Number(info?.total) || 0
+  if (!total) return 0
+  return Math.min(100, ((Number(info.upload) || 0) + (Number(info.download) || 0)) / total * 100)
 }
 
 async function del(id: string) {
@@ -235,13 +249,13 @@ load()
     <div v-show="showAdd" class="add-panel">
       <div class="add-head">
         <span class="add-title">添加订阅</span>
-        <span class="add-tip">名称留空时，自动取 URL 去掉协议后的前 7 个字符</span>
+        <span class="add-tip">名称留空时，自动使用机场返回的订阅名（拿不到时取 URL 前 7 个字符）</span>
       </div>
 
       <div class="add-row">
         <label class="field w-name">
           <span>名称（可选）</span>
-          <input v-model="form.name" type="text" placeholder="主订阅" />
+          <input v-model="form.name" type="text" placeholder="留空自动获取" />
         </label>
         <label class="field grow">
           <span>订阅链接 URL</span>
@@ -292,6 +306,11 @@ load()
           <div class="sub-meta">
             节点数 {{ s.node_count }} · 上次更新 {{ fmtTime(s.last_updated) }}
           </div>
+        </div>
+
+        <div v-if="s.userinfo" class="sub-usage">
+          <div class="usage-track"><div class="usage-bar" :style="{ width: usagePct(s.userinfo) + '%' }"></div></div>
+          <span>{{ usageText(s.userinfo) }}</span>
         </div>
 
         <div class="sub-url">{{ s.url }}</div>
@@ -399,6 +418,9 @@ load()
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sub-error { color: var(--red); font-size: 12px; }
+.sub-usage { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.usage-track { width: 160px; height: 6px; background: #eef1f4; border-radius: 999px; overflow: hidden; flex-shrink: 0; }
+.usage-bar { height: 100%; background: var(--green); }
 
 .tag.green { background: var(--green-bg); color: var(--green); }
 .tag.gray { background: #f0f2f4; color: var(--muted); }

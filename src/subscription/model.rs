@@ -62,6 +62,13 @@ pub struct Subscription {
     pub last_message: String,
     #[serde(default)]
     pub node_count: usize,
+    /// 名字是添加时按 URL 自动生成的：更新时若订阅响应头带机场名，用它替换。
+    /// 用户手动改名后置为 false，不再覆盖。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_auto: bool,
+    /// 最近一次订阅响应头里的流量与到期时间（Subscription-Userinfo）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub userinfo: Option<crate::subscription::fetcher::SubUserinfo>,
 }
 
 fn default_enabled_true() -> bool {
