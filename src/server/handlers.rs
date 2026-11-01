@@ -953,6 +953,59 @@ pub async fn list_connections(
     Ok(Json(v))
 }
 
+/// 断开连接：`id` 为 None 时断开全部（Clash `DELETE /connections[/:id]`）。
+async fn close_connections_inner(state: &AppState, id: Option<&str>) -> AppResult<()> {
+    if !state.status.read().await.running {
+        return Ok(());
+    }
+    let (port, secret) = {
+        let cfg = state.config.read().await;
+        (cfg.clash_api_port, cfg.api_secret.clone())
+    };
+    let url = match id {
+        Some(id) => format!("http://127.0.0.1:{port}/connections/{}", urlencode_path(id)),
+        None => format!("http://127.0.0.1:{port}/connections"),
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .no_proxy()
+        .build()
+        .map_err(|e| AppError(anyhow::anyhow!(e)))?;
+    let mut req = client.delete(&url);
+    if !secret.is_empty() {
+        req = req.header("Authorization", format!("Bearer {secret}"));
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| AppError(anyhow::anyhow!("断开连接失败: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError(anyhow::anyhow!("断开连接 HTTP {}", resp.status())));
+    }
+    Ok(())
+}
+
+/// 连接 id 是 UUID；仍只保留安全字符，避免拼出别的 API 路径。
+fn urlencode_path(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
+}
+
+pub async fn close_all_connections(
+    State(state): State<Arc<AppState>>,
+) -> AppResult<Json<serde_json::Value>> {
+    close_connections_inner(&state, None).await?;
+    state.log("info", "已断开全部连接");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn close_connection(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> AppResult<Json<serde_json::Value>> {
+    close_connections_inner(&state, Some(&id)).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 // ---------- 版本号 ----------
 
 /// 返回当前构建版本（从 Cargo.toml 编译期注入）。

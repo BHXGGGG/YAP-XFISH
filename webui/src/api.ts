@@ -62,6 +62,8 @@ export const api = {
   checkUpdate: (): Promise<UpdateCheckResult> => req('GET', '/api/update/check'),
   /** 连接明细：仅打开管理页时按需拉取，后台不常驻轮询 */
   connections: () => req('GET', '/api/connections'),
+  closeConnection: (id: string) => req('DELETE', '/api/connections/' + encodeURIComponent(id)),
+  closeAllConnections: () => req('DELETE', '/api/connections'),
   /** 30 天每日流量（侧栏统计用） */
   trafficDaily: () => req('GET', '/api/traffic/daily'),
 }

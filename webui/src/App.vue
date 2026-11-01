@@ -9,9 +9,11 @@ import Rules from './views/Rules.vue'
 import Chain from './views/Chain.vue'
 import Settings from './views/Settings.vue'
 import Logs from './views/Logs.vue'
+import Connections from './views/Connections.vue'
 
 const tabs = [
   { key: 'dashboard', label: '仪表盘', icon: '▦' },
+  { key: 'connections', label: '实时连接', icon: '⇅' },
   { key: 'subscriptions', label: '订阅', icon: '↻' },
   { key: 'rules', label: '规则', icon: '⚑' },
   { key: 'chain', label: '链式代理', icon: '⇄' },
@@ -20,6 +22,7 @@ const tabs = [
 ]
 const views: Record<string, any> = {
   dashboard: Dashboard,
+  connections: Connections,
   subscriptions: Subscriptions,
   rules: Rules,
   chain: Chain,

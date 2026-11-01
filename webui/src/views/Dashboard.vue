@@ -74,75 +74,6 @@ function sparkPath(arr: number[]): string {
     .join(' ')
 }
 
-/* ---------- 连接明细（仅展开时 2s 拉一次；收起/离页即停） ---------- */
-const showConnections = ref(false)
-const connLoading = ref(false)
-const connections = ref<any[]>([])
-const connMeta = ref({ uploadTotal: 0, downloadTotal: 0, memory: 0 })
-let connTimer: ReturnType<typeof setInterval> | null = null
-
-async function refreshConnections() {
-  if (!showConnections.value) return
-  connLoading.value = true
-  try {
-    const data: any = await api.connections()
-    connections.value = Array.isArray(data?.connections) ? data.connections : []
-    connMeta.value = {
-      uploadTotal: data?.uploadTotal || 0,
-      downloadTotal: data?.downloadTotal || 0,
-      memory: data?.memory || 0,
-    }
-  } catch (e: any) {
-    toast(e.message || '连接列表失败')
-  } finally {
-    connLoading.value = false
-  }
-}
-
-function startConnPoll() {
-  stopConnPoll()
-  refreshConnections()
-  connTimer = setInterval(refreshConnections, 2000)
-}
-function stopConnPoll() {
-  if (connTimer) {
-    clearInterval(connTimer)
-    connTimer = null
-  }
-}
-
-function toggleConnections() {
-  showConnections.value = !showConnections.value
-  if (showConnections.value) startConnPoll()
-  else {
-    stopConnPoll()
-    connections.value = []
-  }
-}
-
-function connHost(c: any): string {
-  const meta = c?.metadata || {}
-  return meta.host || meta.destinationIP || meta.remoteDestination || '—'
-}
-// sing-box 出站 tag 就是节点 id，连接列表里显示成节点名
-const nodeNameById = computed(() => {
-  const m = new Map<string, string>()
-  for (const n of store.profile.nodes || []) m.set(n.id, n.name)
-  return m
-})
-function tagName(tag: string): string {
-  return nodeNameById.value.get(tag) || tag
-}
-function connRule(c: any): string {
-  const r = c?.rule || c?.rulePayload || '—'
-  return r.replace(/route\(([^)]+)\)/g, (_: string, t: string) => `route(${tagName(t)})`)
-}
-function connChains(c: any): string {
-  const ch = c?.chains
-  if (Array.isArray(ch) && ch.length) return ch.map(tagName).join(' → ')
-  return c?.outbound ? tagName(c.outbound) : '—'
-}
-
 onMounted(() => {
   // 仅仪表盘挂载时跟踪速率历史（离开仪表盘卸载则停止）
   rateWatchStop = watch(
@@ -155,7 +86,6 @@ onBeforeUnmount(() => {
     rateWatchStop()
     rateWatchStop = null
   }
-  stopConnPoll()
 })
 
 const visibleNodes = computed(() => {
@@ -446,43 +376,8 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
       <button class="primary" :disabled="store.status.running" @click="start">启动代理</button>
       <button :disabled="!store.status.running" @click="stop">停止</button>
       <button @click="restart">重启</button>
-      <button @click="toggleConnections" :class="{ active: showConnections }">
-        {{ showConnections ? '隐藏连接' : '显示连接' }}
-      </button>
     </div>
 
-    <div v-if="showConnections" class="conn-panel">
-      <div class="conn-head">
-        <span>活动连接（每 2s 刷新）</span>
-        <span class="conn-meta">
-          ↑ {{ fmtBytes(connMeta.uploadTotal) }} · ↓ {{ fmtBytes(connMeta.downloadTotal) }} · mem {{ Math.round((connMeta.memory || 0) / 1024 / 1024) }} MB
-          <span v-if="connLoading" class="conn-loading">· 刷新中…</span>
-        </span>
-      </div>
-      <div v-if="!connections.length" class="empty">暂无活动连接。</div>
-      <div v-else class="conn-table-wrap">
-        <table class="conn-table">
-          <thead>
-            <tr>
-              <th>主机</th>
-              <th>网络</th>
-              <th>规则</th>
-              <th>链路</th>
-              <th>↑/↓ 字节</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(c, i) in connections" :key="i">
-              <td class="mono">{{ connHost(c) }}</td>
-              <td>{{ c?.metadata?.network || c?.metadata?.type || '—' }}</td>
-              <td class="mono">{{ connRule(c) }}</td>
-              <td class="mono">{{ connChains(c) }}</td>
-              <td class="mono">↑{{ c?.upload ?? 0 }} / ↓{{ c?.download ?? 0 }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
 
     <!-- 节点区：标题 + 搜索框 + 两按钮 同一行 -->
     <div class="section-head">
@@ -785,27 +680,5 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 .rate-spark { width: 100%; height: 40px; margin-top: 6px; display: block; }
 @media (max-width: 900px) { .rate-card { grid-column: span 1; } }
 
-/* 连接明细面板 */
-.conn-panel {
-  margin-top: 14px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 14px;
-}
-.conn-head {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 13px; color: #374151; margin-bottom: 8px;
-}
-.conn-meta { color: #6b7280; font-size: 12px; }
-.conn-loading { color: #2563eb; }
-.conn-table-wrap { overflow: auto; max-height: 360px; border-top: 1px solid var(--border); }
-.conn-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.conn-table th, .conn-table td {
-  padding: 6px 8px; border-bottom: 1px solid var(--border);
-  text-align: left; white-space: nowrap;
-}
-.conn-table th { background: #f9fafb; position: sticky; top: 0; }
-.conn-table .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .actions button.active { background: #1f2937; color: #fff; border-color: #1f2937; }
 </style>
