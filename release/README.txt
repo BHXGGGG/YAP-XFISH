@@ -1,6 +1,10 @@
-YAP-XFISH v0.1.47 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.1.48 —— Windows Sing-box 代理客户端（自包含分发）
 
 【本版更新】
+- 「实时连接」默认不显示直连（direct）连接，只看走代理的；
+  右上角「显示直连」可切换，选择会被记住。
+
+【v0.1.47】
 - 侧边栏新增「实时连接」页，取代仪表盘里的连接面板：显示目标、规则、出口节点名、
   每条连接的实时上下行速度和总量，可搜索，可断开单个或全部连接。
 
@@ -66,5 +70,5 @@ YAP-XFISH v0.1.47 —— Windows Sing-box 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.1.47
+- YAP-XFISH v0.1.48
 - 本包附带 sing-box v1.14.4（windows/amd64，与 yap-xfish.exe 同目录；libcronet.dll 供 naive 协议使用）

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
 
@@ -75,10 +75,21 @@ async function poll() {
   } catch { /* 核心未运行等：保持上次结果 */ }
   loaded.value = true
 }
+// 直连连接默认隐藏（只看走代理的），勾选记在本地
+const DIRECT_LS_KEY = 'yap-xfish.connections.show-direct'
+const showDirect = ref(localStorage.getItem(DIRECT_LS_KEY) === '1')
+watch(showDirect, (v) => {
+  try { localStorage.setItem(DIRECT_LS_KEY, v ? '1' : '0') } catch {}
+})
+const visible = computed(() =>
+  showDirect.value ? rows.value : rows.value.filter((r) => r.outbound !== 'direct'),
+)
+const hiddenDirect = computed(() => rows.value.length - visible.value.length)
+
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
-  if (!q) return rows.value
-  return rows.value.filter((r) =>
+  if (!q) return visible.value
+  return visible.value.filter((r) =>
     [r.host, r.rule, r.outbound, r.process].some((s) => s.toLowerCase().includes(q)),
   )
 })
@@ -124,10 +135,14 @@ onBeforeUnmount(() => {
       <div>
         <h2>实时连接</h2>
         <p class="sub">
-          {{ filtered.length }} 个连接 · 总计 ↑ {{ fmtB(totals.up) }} · ↓ {{ fmtB(totals.down) }}
+          {{ filtered.length }} 个连接<template v-if="hiddenDirect"> · 已隐藏 {{ hiddenDirect }} 个直连</template>
+          · 总计 ↑ {{ fmtB(totals.up) }} · ↓ {{ fmtB(totals.down) }}
         </p>
       </div>
       <div class="tools">
+        <label class="direct-toggle" title="直连（direct）连接默认不显示">
+          <input v-model="showDirect" type="checkbox" />显示直连
+        </label>
         <input
           v-if="showSearch"
           v-model="query"
@@ -191,6 +206,10 @@ onBeforeUnmount(() => {
 .tools {
   display: flex; align-items: center; gap: 4px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 4px;
+}
+.direct-toggle {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 10px 0 8px;
+  color: var(--muted); font-size: 12px; cursor: pointer; user-select: none;
 }
 .tools .search {
   width: 220px; border: none; outline: none; padding: 6px 10px; font-size: 13px; background: transparent;
