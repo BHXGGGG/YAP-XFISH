@@ -4,6 +4,7 @@ pub mod dpi;
 pub mod log_file;
 pub mod mem;
 pub mod msgbox;
+pub mod notify;
 pub mod process_check;
 pub mod single_instance;
 pub mod sysproxy;

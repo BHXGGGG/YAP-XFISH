@@ -34,6 +34,60 @@ struct ProbeConfig {
     secret: String,
 }
 
+/// 运行中的核心被替换时弹系统通知：重启期间 TUN 会短暂断开，
+/// 这一瞬间新建的连接可能绕过代理直连并被长期复用（出口 IP 变成本机 IP）。
+fn notify_core_restarted() {
+    crate::system::notify::toast(
+        "YAP-XFISH：sing-box 核心已重启",
+        "TUN 刚刚短暂中断，重启期间新建的连接可能走了直连。如出口 IP 异常，请重开相关应用的连接。",
+    );
+}
+
+/// 不参与「节点内容」比较的出站类型（它们的 tag 是固定名字，不随订阅变化）。
+const FIXED_OUTBOUND_TYPES: &[&str] = &["direct", "block", "dns", "selector", "urltest"];
+
+/// 把配置规范化后比较：节点 tag 替换成其连接参数本身，outbounds 按内容排序。
+/// 节点 id（= tag）由名字参与计算，信息节点改名就会换 tag；订阅合并还会改变节点顺序。
+/// 这两种变化不影响任何连接，因此视为等价。
+fn same_effective_config(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    canonical_config(a) == canonical_config(b)
+}
+
+fn canonical_config(cfg: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let mut cfg = cfg.clone();
+    let mut tag_map = std::collections::HashMap::new();
+    if let Some(outs) = cfg.get_mut("outbounds").and_then(|v| v.as_array_mut()) {
+        for o in outs.iter_mut() {
+            let ty = o.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if FIXED_OUTBOUND_TYPES.contains(&ty) {
+                continue;
+            }
+            let Some(obj) = o.as_object_mut() else { continue };
+            if let Some(Value::String(tag)) = obj.remove("tag") {
+                tag_map.insert(tag, format!("node:{}", Value::Object(obj.clone())));
+            }
+        }
+    }
+    fn replace_tags(v: &mut Value, map: &std::collections::HashMap<String, String>) {
+        match v {
+            Value::String(s) => {
+                if let Some(c) = map.get(s.as_str()) {
+                    *s = c.clone();
+                }
+            }
+            Value::Array(a) => a.iter_mut().for_each(|x| replace_tags(x, map)),
+            Value::Object(o) => o.values_mut().for_each(|x| replace_tags(x, map)),
+            _ => {}
+        }
+    }
+    replace_tags(&mut cfg, &tag_map);
+    if let Some(outs) = cfg.get_mut("outbounds").and_then(|v| v.as_array_mut()) {
+        outs.sort_by_cached_key(|o| o.to_string());
+    }
+    cfg
+}
+
 fn outbounds_fingerprint(profile: &AppProfile) -> u64 {
     let mut hash = DefaultHasher::new();
     for node in &profile.nodes {
@@ -277,6 +331,7 @@ impl CoreManager {
                             source: "core".into(),
                             message: "已用 system 栈重启".to_string(),
                         });
+                        notify_core_restarted();
                     }
                     Err(e) => {
                         let _ = event_tx.send(AppEvent::Log {
@@ -302,8 +357,12 @@ impl CoreManager {
     }
 
     pub async fn restart(&self, profile: &AppProfile, app_cfg: &AppConfig) -> AppResult<()> {
+        let was_running = self.is_running().await;
         self.stop().await?;
         self.start(profile, app_cfg).await?;
+        if was_running {
+            notify_core_restarted();
+        }
         Ok(())
     }
 
@@ -331,10 +390,14 @@ impl CoreManager {
         let rendered = render::render(profile, app_cfg);
         let s = serde_json::to_string_pretty(&rendered)?;
 
-        // 配置与正在运行的完全一致（如订阅定时更新但内容没变）：不重启核心。
-        // 重启会让 rule-set 重新初始化，网络差时可能 FATAL 退出。
+        // 配置与正在运行的实质一致（如订阅更新只改了「剩余流量」等节点名 / 节点顺序）：不重启核心。
+        // 重启会让 TUN 短暂断开（期间新建连接可能漏到直连），rule-set 也要重新初始化。
+        // 跳过时不写 config.json，让它始终等于运行中的配置，供下次比较。
         if self.is_running().await
-            && std::fs::read_to_string(&self.inner.config_path).ok().as_deref() == Some(s.as_str())
+            && std::fs::read_to_string(&self.inner.config_path)
+                .ok()
+                .and_then(|old| serde_json::from_str::<serde_json::Value>(&old).ok())
+                .is_some_and(|old| same_effective_config(&old, &rendered))
         {
             let _ = self.inner.event_tx.send(AppEvent::Log {
                 level: "info".into(),
@@ -362,12 +425,16 @@ impl CoreManager {
         }
 
         // 停掉旧进程
+        let was_running = self.is_running().await;
         self.stop().await?;
 
         match self.spawn_captured(&self.inner.binary).await {
             Ok(child) => {
                 *self.inner.child.lock().await = Some(child);
                 self.remember_probe_config(profile, app_cfg).await;
+                if was_running {
+                    notify_core_restarted();
+                }
                 Ok(())
             }
             Err(e) => {
@@ -489,6 +556,57 @@ fn log_level_of(line: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::model::{Node, ProxyMode};
+
+    fn cfg_with(outbounds: serde_json::Value, final_tag: &str) -> serde_json::Value {
+        serde_json::json!({
+            "outbounds": outbounds,
+            "route": { "final": final_tag, "rules": [{ "outbound": "direct", "rule_set": "geoip-cn" }] }
+        })
+    }
+
+    #[test]
+    fn effective_config_ignores_node_tag_and_order() {
+        let a = cfg_with(
+            serde_json::json!([
+                { "type": "vless", "tag": "s-aaa", "server": "1.1.1.1", "server_port": 443 },
+                { "type": "vless", "tag": "s-info1", "server": "9.9.9.9", "server_port": 1 },
+                { "type": "direct", "tag": "direct" }
+            ]),
+            "s-aaa",
+        );
+        // 信息节点改名 → 新 tag；顺序也变了
+        let b = cfg_with(
+            serde_json::json!([
+                { "type": "direct", "tag": "direct" },
+                { "type": "vless", "tag": "s-info2", "server": "9.9.9.9", "server_port": 1 },
+                { "type": "vless", "tag": "s-aaa", "server": "1.1.1.1", "server_port": 443 }
+            ]),
+            "s-aaa",
+        );
+        assert!(same_effective_config(&a, &b));
+    }
+
+    #[test]
+    fn effective_config_detects_real_changes() {
+        let base = serde_json::json!([
+            { "type": "vless", "tag": "s-aaa", "server": "1.1.1.1", "server_port": 443 },
+            { "type": "vless", "tag": "s-bbb", "server": "2.2.2.2", "server_port": 443 },
+            { "type": "direct", "tag": "direct" }
+        ]);
+        let a = cfg_with(base.clone(), "s-aaa");
+        // 改端口
+        let mut changed = base.clone();
+        changed[0]["server_port"] = 8443.into();
+        assert!(!same_effective_config(&a, &cfg_with(changed, "s-aaa")));
+        // 换选中节点
+        assert!(!same_effective_config(&a, &cfg_with(base.clone(), "s-bbb")));
+        // 新增节点
+        let mut added = base.clone();
+        added.as_array_mut().unwrap().push(
+            serde_json::json!({ "type": "vless", "tag": "s-ccc", "server": "3.3.3.3", "server_port": 443 }),
+        );
+        assert!(!same_effective_config(&a, &cfg_with(added, "s-aaa")));
+    }
 
     #[test]
     fn probe_config_ignores_latency_and_node_selection() {

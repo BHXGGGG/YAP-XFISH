@@ -4,12 +4,12 @@
   --border: #e6e8eb;
   --text: #1f2329;
   --muted: #8a9099;
-  --primary: #4096ff;
-  --primary-d: #2f80ed;
-  --green: #1e8e4a;
-  --green-bg: #e2f7e9;
-  --red: #c0392b;
-  --red-bg: #fde2e2;
+  --primary: #2563eb;
+  --primary-d: #1d4ed8;
+  --green: #166534;   /* = 通-深 success-ink */
+  --green-bg: #dcfce7; /* = 通-洗 success-wash */
+  --red: #991b1b;      /* = 断-深 danger-ink */
+  --red-bg: #fee2e2;   /* = 断-洗 danger-wash */
   --radius: 10px;
 }
 * { box-sizing: border-box; }

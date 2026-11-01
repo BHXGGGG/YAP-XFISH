@@ -34,6 +34,7 @@ const presetKey = ref('')
 function nameOf(id: string | null | undefined): string {
   if (!id) return '—'
   if (id === 'direct' || id === 'block') return id
+  if (id === 'proxy') return '代理（当前节点）'
   const n = (store.profile.nodes || []).find((x: any) => x.id === id)
   return n?.name || id
 }
@@ -89,6 +90,7 @@ async function del(id: string) {
       <input v-model="payload" type="text" placeholder="如 skk.moe（后缀）/ ip.skk.moe（精确）/ geosite:cn / 192.168.0.0/16" style="min-width: 300px" />
       <select v-model="outbound">
         <option value="direct">direct</option>
+        <option value="proxy">代理（当前节点）</option>
         <option value="block">block</option>
         <option v-for="n in store.profile.nodes" :key="n.id" :value="n.id">{{ n.name }}</option>
       </select>

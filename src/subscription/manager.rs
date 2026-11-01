@@ -236,6 +236,7 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
     let profile_now = state.visible_profile().await;
     let running = state.core.is_running().await;
 
+    // reload_safe 内部会判断：只有节点连接参数 / 规则等实质变化才重启核心。
     let apply_result = if running {
         state.core.reload_safe(&profile_now, &app_cfg).await
     } else {

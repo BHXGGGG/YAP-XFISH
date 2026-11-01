@@ -682,7 +682,7 @@ pub async fn add_rule(
         )));
     }
 
-    let rule = RouteRule {
+    let mut rule = RouteRule {
         id: gen_id(),
         name: if req.name.trim().is_empty() {
             payload.clone()
@@ -693,9 +693,28 @@ pub async fn add_rule(
         payload,
         outbound,
     };
-    {
+    let rules_before = {
         let mut p = state.profile.write().await;
-        p.rules.push(rule.clone());
+        let before = p.rules.clone();
+        if let Some(existing) = p
+            .rules
+            .iter_mut()
+            .find(|r| r.r#type == rule.r#type && r.payload.eq_ignore_ascii_case(&rule.payload))
+        {
+            // 同类型同内容已存在：只改出站，不重复添加（扩展里重复点击也安全）
+            existing.outbound = rule.outbound.clone();
+            rule = existing.clone();
+        } else if crate::config::render::is_rule_set_rule(&rule) {
+            p.rules.push(rule.clone());
+        } else {
+            // 精确规则排在 GeoSite/GeoIP 前面，否则会先被「国内直连」命中而不生效
+            let at = p
+                .rules
+                .iter()
+                .position(crate::config::render::is_rule_set_rule)
+                .unwrap_or(p.rules.len());
+            p.rules.insert(at, rule.clone());
+        }
         crate::config::manager::save_profile(&state.data_dir, &p)?;
         state.log(
             "info",
@@ -704,16 +723,17 @@ pub async fn add_rule(
                 rule.r#type, rule.payload, rule.outbound
             ),
         );
-    }
+        before
+    };
     // 规则错误会导致核心 FATAL，这里用严格 reload 并把错误返回前端
     let cfg = state.config.read().await.clone();
     let p = state.visible_profile().await;
     if state.core.is_running().await {
         if let Err(e) = state.core.reload(&p, &cfg).await {
-            // 回滚刚加的规则，避免配置一直坏
+            // 回滚到添加前的规则列表，避免配置一直坏
             {
                 let mut pr = state.profile.write().await;
-                pr.rules.retain(|r| r.id != rule.id);
+                pr.rules = rules_before;
                 let _ = crate::config::manager::save_profile(&state.data_dir, &pr);
             }
             return Err(AppError(anyhow::anyhow!(
@@ -722,7 +742,7 @@ pub async fn add_rule(
         }
     } else if let Err(e) = state.core.write_config_only(&p, &cfg).await {
         let mut pr = state.profile.write().await;
-        pr.rules.retain(|r| r.id != rule.id);
+        pr.rules = rules_before;
         let _ = crate::config::manager::save_profile(&state.data_dir, &pr);
         return Err(AppError(anyhow::anyhow!("写入配置失败: {e}")));
     }

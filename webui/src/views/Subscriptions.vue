@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
 
 const emit = defineEmits<{ (e: 'refresh'): void }>()
+
+// 「添加订阅」面板默认收起，点工具栏按钮展开。
+const showAdd = ref(false)
 
 // 「添加后立即启用」默认值的规则：
 //   - 当前已有至少一个启用订阅 → 默认 false（避免一次性启用多个，新订阅先以停用状态添加）
@@ -64,6 +67,28 @@ const statusText: Record<string, string> = {
   failed: '失败',
 }
 
+/* ---------- 顶部概览 ---------- */
+const subs = computed<any[]>(() => store.subscriptions || [])
+const enabledCount = computed(() => subs.value.filter((s) => s.enabled).length)
+const nodeTotal = computed(() => subs.value.reduce((n, s) => n + (Number(s.node_count) || 0), 0))
+
+// 周期 → 毫秒。manual / cron 没有固定间隔，不参与「下次自动更新」。
+const INTERVAL_MS: Record<string, number> = {
+  every30_min: 30 * 60e3,
+  hourly: 3600e3,
+  every6_hours: 6 * 3600e3,
+  every12_hours: 12 * 3600e3,
+  daily: 24 * 3600e3,
+}
+const nextUpdate = computed(() => {
+  const times = subs.value
+    .filter((s) => s.enabled && INTERVAL_MS[s.interval] && s.last_updated)
+    .map((s) => new Date(s.last_updated).getTime() + INTERVAL_MS[s.interval])
+    .filter((t) => Number.isFinite(t))
+  if (!times.length) return '—'
+  return new Date(Math.min(...times)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+})
+
 async function load() {
   try {
     store.subscriptions = await api.subscriptions()
@@ -87,6 +112,7 @@ async function add() {
     form.url = ''
     form.userAgent = ''
     form.uaPreset = 'default'
+    showAdd.value = false
     toast('订阅已添加')
     // 列表由后端 WS 实时推送，无需主动 load()
   } catch (e: any) { toast(e.message) }
@@ -120,6 +146,13 @@ async function updateAll() {
   try {
     await api.updateAllSubscriptions()
     toast('已触发全部更新')
+  } catch (e: any) { toast(e.message) }
+}
+
+async function setIntervalOf(s: any, interval: string) {
+  try {
+    await api.updateSubscriptionSettings(s.id, { interval })
+    toast('更新周期已改为 ' + intervalLabel(interval))
   } catch (e: any) { toast(e.message) }
 }
 
@@ -166,76 +199,146 @@ load()
 
 <template>
   <section>
-    <h2>订阅管理</h2>
-    <div class="form">
-      <input v-model="form.name" type="text" placeholder="名称（可选）" />
-      <input v-model="form.url" type="text" placeholder="订阅链接 URL" style="min-width: 280px" />
-      <select v-model="form.interval">
-        <option v-for="[k, l] in intervals" :key="k" :value="k">{{ l }}</option>
-      </select>
-      <select v-model="form.uaPreset" title="User-Agent 预设">
-        <option v-for="p in UA_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
-      </select>
-      <input
-        v-model="form.userAgent"
-        type="text"
-        :placeholder="form.uaPreset === 'custom' ? '自定义 User-Agent' : '留空使用预设'"
-        :disabled="form.uaPreset !== 'custom'"
-        style="min-width: 160px"
-      />
-      <label class="row" style="margin: 0"><input type="checkbox" v-model="form.enabled" /> 启用</label>
-      <button class="primary" @click="add">添加订阅</button>
+    <header class="page-head">
+      <h2>订阅管理</h2>
+      <p class="sub">保存到 data/subscriptions.json · 重启不丢失</p>
+    </header>
+
+    <div class="summary">
+      <div class="sum">
+        <div class="k">订阅总数</div>
+        <div class="v">{{ subs.length }}</div>
+      </div>
+      <div class="sum">
+        <div class="k">已启用</div>
+        <div class="v green">{{ enabledCount }}</div>
+      </div>
+      <div class="sum">
+        <div class="k">节点总数</div>
+        <div class="v">{{ nodeTotal }}</div>
+      </div>
+      <div class="sum">
+        <div class="k">下次自动更新</div>
+        <div class="v">{{ nextUpdate }}</div>
+      </div>
     </div>
 
-    <div class="row" style="margin: 12px 0">
-      <button @click="updateAll">全部更新</button>
-      <button @click="load">刷新列表</button>
-      <span class="hint" style="margin-left: 8px">
-        订阅已持久化（重启后台不丢失）；后台每 30s 扫描到期订阅自动更新，失败自动回滚。
-      </span>
+    <div class="toolbar">
+      <button class="primary add-toggle" :class="{ open: showAdd }" @click="showAdd = !showAdd">
+        <span class="ic">＋</span>添加订阅<span v-if="showAdd" class="chev">▴</span>
+      </button>
+      <button @click="updateAll">↻ 全部更新</button>
+      <button @click="load">⟳ 刷新列表</button>
+      <span class="hint">后台每 30 秒扫描到期订阅自动更新，失败自动回滚到上一次可用配置</span>
+    </div>
+
+    <div v-show="showAdd" class="add-panel">
+      <div class="add-head">
+        <span class="add-title">添加订阅</span>
+        <span class="add-tip">名称留空时，自动取 URL 去掉协议后的前 7 个字符</span>
+      </div>
+
+      <div class="add-row">
+        <label class="field w-name">
+          <span>名称（可选）</span>
+          <input v-model="form.name" type="text" placeholder="主订阅" />
+        </label>
+        <label class="field grow">
+          <span>订阅链接 URL</span>
+          <input v-model="form.url" type="text" placeholder="https://example.com/api/v1/client/subscribe?token=..." />
+        </label>
+        <label class="field w-int">
+          <span>更新周期</span>
+          <select v-model="form.interval">
+            <option v-for="[k, l] in intervals" :key="k" :value="k">{{ l }}</option>
+          </select>
+        </label>
+        <label class="field w-ua">
+          <span>User-Agent 预设</span>
+          <select v-model="form.uaPreset">
+            <option v-for="p in UA_PRESETS" :key="p.value" :value="p.value">{{ p.label }}</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="add-row">
+        <label class="field grow">
+          <span>自定义 User-Agent（预设选「自定义」时生效）</span>
+          <input
+            v-model="form.userAgent"
+            type="text"
+            :placeholder="form.uaPreset === 'custom' ? '自定义 User-Agent' : '留空则使用预设值'"
+            :disabled="form.uaPreset !== 'custom'"
+          />
+        </label>
+        <label class="ck">
+          <input type="checkbox" v-model="form.enabled" />
+          <span>添加后立即启用</span>
+        </label>
+        <button @click="showAdd = false">取消</button>
+        <button class="primary" @click="add">添加订阅</button>
+      </div>
     </div>
 
     <ul class="list">
-      <li v-for="s in store.subscriptions" :key="s.id">
-        <div class="grow">
-          <div class="name">
-            {{ s.name }}
+      <li v-for="s in store.subscriptions" :key="s.id" :class="{ off: !s.enabled, updating: s.last_status === 'updating' }">
+        <div class="sub-head">
+          <div class="sub-title">
+            <span class="sub-name">{{ s.name }}</span>
             <span class="tag">{{ intervalLabel(s.interval) }}</span>
-            <span class="tag" :class="{ on: s.enabled }">{{ s.enabled ? '已启用' : '已停用' }}</span>
+            <span class="tag" :class="s.enabled ? 'green' : 'gray'">{{ s.enabled ? '已启用' : '已停用' }}</span>
             <span class="tag" :class="s.last_status">{{ statusText[s.last_status] || s.last_status }}</span>
           </div>
-          <div class="meta">{{ s.url }}</div>
-          <div class="meta">
+          <div class="sub-meta">
             节点数 {{ s.node_count }} · 上次更新 {{ fmtTime(s.last_updated) }}
-            <span v-if="s.last_message"> · {{ s.last_message }}</span>
-          </div>
-          <div class="row-actions">
-            <button class="primary" @click="updateNow(s.id)">立即更新</button>
-            <button @click="toggleEnabled(s)">{{ s.enabled ? '停用' : '启用' }}</button>
-            <template v-if="renamingId === s.id">
-              <input
-                v-model="renameValue"
-                class="rename-input"
-                type="text"
-                aria-label="订阅名称"
-                @keyup.enter="saveRename(s)"
-                @keyup.escape="cancelRename"
-              />
-              <button @click="saveRename(s)">保存</button>
-              <button @click="cancelRename">取消</button>
-            </template>
-            <button v-else @click="startRename(s)">重命名</button>
-          </div>
-          <div
-            v-if="store.subProgress[s.id] && store.subProgress[s.id].status === 'updating'"
-            class="progress"
-          >
-            <div class="bar" :style="{ width: store.subProgress[s.id].progress + '%' }"></div>
-            <span class="pm">{{ store.subProgress[s.id].message }}</span>
           </div>
         </div>
-        <div class="actions">
-          <button class="danger" @click="del(s.id)">删除</button>
+
+        <div class="sub-url">{{ s.url }}</div>
+
+        <div v-if="s.last_status === 'failed' && s.last_message" class="sub-error">
+          更新失败：{{ s.last_message }}
+        </div>
+
+        <div
+          v-if="store.subProgress[s.id] && store.subProgress[s.id].status === 'updating'"
+          class="progress"
+        >
+          <div class="track">
+            <div class="bar" :style="{ width: store.subProgress[s.id].progress + '%' }"></div>
+          </div>
+          <div class="progress-foot">
+            <span>{{ store.subProgress[s.id].message }}</span>
+            <span>{{ store.subProgress[s.id].progress }}%</span>
+          </div>
+        </div>
+
+        <div class="sub-actions">
+          <button class="primary" @click="updateNow(s.id)">立即更新</button>
+          <select
+            class="pill-select"
+            :value="s.interval"
+            title="自动更新周期"
+            aria-label="自动更新周期"
+            @change="setIntervalOf(s, ($event.target as HTMLSelectElement).value)"
+          >
+            <option v-for="[k, l] in intervals.filter(([k]) => k !== 'cron')" :key="k" :value="k">周期 {{ l }}</option>
+          </select>
+          <button @click="toggleEnabled(s)">{{ s.enabled ? '停用' : '启用' }}</button>
+          <template v-if="renamingId === s.id">
+            <input
+              v-model="renameValue"
+              class="rename-input"
+              type="text"
+              aria-label="订阅名称"
+              @keyup.enter="saveRename(s)"
+              @keyup.escape="cancelRename"
+            />
+            <button class="primary" @click="saveRename(s)">保存</button>
+            <button @click="cancelRename">取消</button>
+          </template>
+          <button v-else @click="startRename(s)">重命名</button>
+          <button class="danger del" @click="del(s.id)">删除</button>
         </div>
       </li>
       <li v-if="!store.subscriptions.length" class="empty">暂无订阅，添加一个开始吧。</li>
@@ -244,16 +347,74 @@ load()
 </template>
 
 <style scoped>
+.page-head { margin-bottom: 16px; }
+.page-head h2 { margin: 0; font-size: 19px; }
+.page-head .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+
+.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+.sum { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.sum .k { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.sum .v { font-size: 20px; font-weight: 600; }
+.sum .v.green { color: var(--green); }
+
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.toolbar .hint { margin: 0 0 0 4px; }
+.add-toggle { display: flex; align-items: center; gap: 6px; }
+.add-toggle .ic { font-size: 13px; }
+.add-toggle.open { background: var(--primary-d); border-color: var(--primary-d); }
+.add-toggle .chev { font-size: 10px; margin-left: 2px; }
+
+.add-panel {
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--panel); border: 1px solid #bcdcff; border-radius: var(--radius);
+  padding: 16px; margin-bottom: 12px;
+}
+.add-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.add-title { font-weight: 700; font-size: 14px; }
+.add-tip { color: var(--muted); font-size: 11px; }
+.add-row { display: flex; align-items: flex-end; gap: 10px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { color: var(--muted); font-size: 12px; }
+.field input, .field select {
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  font-size: 13px; font-family: inherit; background: #fff; color: var(--text); width: 100%;
+}
+.field input:disabled { background: #fafbfc; color: var(--muted); }
+.w-name { width: 165px; }
+.w-int { width: 140px; }
+.w-ua { width: 200px; }
 .grow { flex: 1; min-width: 0; }
-.actions { display: flex; flex-direction: column; gap: 6px; }
-.row-actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.rename-input { width: 130px; padding: 4px 6px; }
-.progress { margin-top: 6px; position: relative; height: 16px; background: #eee; border-radius: 4px; overflow: hidden; }
-.bar { height: 100%; background: #3b82f6; transition: width .3s; }
-.pm { position: absolute; left: 6px; top: 0; font-size: 11px; line-height: 16px; color: #333; }
-.tag.on { background: #dcfce7; color: #166534; }
-.tag.success { background: #dcfce7; color: #166534; }
-.tag.failed { background: #fee2e2; color: #991b1b; }
+.ck { display: flex; align-items: center; gap: 7px; font-size: 13px; padding-bottom: 9px; }
+.ck input { width: 15px; height: 15px; accent-color: var(--primary); }
+
+.list li { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.list li.off { background: #fbfbfc; }
+.list li.updating { border-color: #bcdcff; }
+.sub-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sub-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.sub-name { font-weight: 600; font-size: 14px; }
+.sub-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.sub-url {
+  color: var(--muted); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sub-error { color: var(--red); font-size: 12px; }
+
+.tag.green { background: var(--green-bg); color: var(--green); }
+.tag.gray { background: #f0f2f4; color: var(--muted); }
+.tag.success { background: var(--green-bg); color: var(--green); }
+.tag.failed { background: var(--red-bg); color: var(--red); }
 .tag.updating { background: #dbeafe; color: #1e40af; }
-button.danger { color: #b91c1c; }
+
+.progress { display: flex; flex-direction: column; gap: 4px; }
+.track { height: 6px; background: #eef1f4; border-radius: 999px; overflow: hidden; }
+.track .bar { height: 100%; background: var(--primary); transition: width .3s; }
+.progress-foot { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+
+.sub-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.sub-actions button { padding: 6px 12px; font-size: 13px; }
+.pill-select { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 13px; background: #fff; color: var(--text); }
+.rename-input { width: 140px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.del { margin-left: auto; color: var(--red); }
+.del:hover { border-color: var(--red); color: var(--red); }
 </style>

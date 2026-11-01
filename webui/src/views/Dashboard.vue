@@ -227,7 +227,11 @@ const displayedNodes = computed(() => {
         return hay.includes(q)
       })
     : base
-  if (!sortByLatency.value) return filtered
+  // 未按延迟排序时，当前选中节点排第一，省得在长列表里找
+  if (!sortByLatency.value) {
+    const i = filtered.findIndex((n: any) => n.id === store.profile.selected_node)
+    return i > 0 ? [filtered[i], ...filtered.slice(0, i), ...filtered.slice(i + 1)] : filtered
+  }
   return [...filtered].sort((a: any, b: any) => {
     const rank = (n: any) =>
       n.latency_status === 'ok' ? 0 : n.latency_status === 'timeout' ? 1 : 2

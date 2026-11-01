@@ -25,7 +25,7 @@ pub fn render(profile: &AppProfile, cfg: &AppConfig) -> Value {
     let user_rules: Vec<Value> = profile
         .rules
         .iter()
-        .filter_map(route_rule_to_json)
+        .filter_map(|r| route_rule_to_json(r, &final_outbound))
         .collect();
     let mut needed_rule_sets: HashSet<String> = HashSet::new();
     for r in &profile.rules {
@@ -217,13 +217,18 @@ fn normalize_kind(kind: &str) -> &str {
     }
 }
 
+/// 规则出站别名：渲染时解析为当前选中节点（直连模式下为 direct），
+/// 切换节点 / 订阅更新导致节点 id 变化后规则依然有效。
+pub const PROXY_OUTBOUND: &str = "proxy";
+
 /// 将内部 RouteRule 转为 sing-box 1.13 route.rules 条目。
 /// 返回 None 表示规则无效/空 payload，渲染时跳过。
-fn route_rule_to_json(r: &RouteRule) -> Option<Value> {
+fn route_rule_to_json(r: &RouteRule, proxy_tag: &str) -> Option<Value> {
     let outbound = r.outbound.trim();
     if outbound.is_empty() {
         return None;
     }
+    let outbound = if outbound == PROXY_OUTBOUND { proxy_tag } else { outbound };
     let t = r.r#type.trim().to_ascii_lowercase();
     let raw = r.payload.trim();
     if raw.is_empty() {
@@ -283,6 +288,11 @@ fn route_rule_to_json(r: &RouteRule) -> Option<Value> {
         "rule_set" => Some(json!({ "rule_set": raw, "outbound": outbound })),
         _ => None,
     }
+}
+
+/// 是否为 GeoSite / GeoIP / rule_set 这类大范围规则（手动添加的精确规则应排在它们前面）。
+pub fn is_rule_set_rule(r: &RouteRule) -> bool {
+    rule_set_tag_for(r).is_some()
 }
 
 fn rule_set_tag_for(r: &RouteRule) -> Option<String> {
@@ -746,5 +756,34 @@ fn apply_transport(v: &mut Value, node: &Node) {
             }
         }
         v["transport"] = transport;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_rule_follows_selected_node() {
+        let mut p = AppProfile::default();
+        p.mode = ProxyMode::Rule;
+        p.selected_node = Some("node-a".into());
+        p.rules.push(RouteRule {
+            id: "r1".into(),
+            name: "x".into(),
+            r#type: "domain_suffix".into(),
+            payload: "example.com".into(),
+            outbound: PROXY_OUTBOUND.into(),
+        });
+        let v = render(&p, &AppConfig::default());
+        let rules = v["route"]["rules"].as_array().unwrap();
+        let r = rules.iter().find(|r| r.get("domain_suffix").is_some()).unwrap();
+        assert_eq!(r["outbound"], "node-a");
+
+        p.mode = ProxyMode::Direct;
+        let v = render(&p, &AppConfig::default());
+        let rules = v["route"]["rules"].as_array().unwrap();
+        let r = rules.iter().find(|r| r.get("domain_suffix").is_some()).unwrap();
+        assert_eq!(r["outbound"], "direct");
     }
 }
