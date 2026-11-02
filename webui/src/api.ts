@@ -24,11 +24,29 @@ async function req(method: string, path: string, body?: any) {
   return ct.includes('application/json') ? r.json() : r.text()
 }
 
+export interface UpdateAssetInfo {
+  name: string
+  size: number
+}
+
 export interface UpdateCheckResult {
   current_version: string
   latest_version: string | null
   status: 'update_available' | 'up_to_date' | 'ahead' | 'no_release'
   release_url: string
+  /** 仅含程序文件的更新包（自动更新默认下载它） */
+  update_asset?: UpdateAssetInfo | null
+  /** 含 sing-box 的完整包 */
+  full_asset?: UpdateAssetInfo | null
+}
+
+export interface UpdateProgress {
+  state: 'idle' | 'downloading' | 'extracting' | 'ready' | 'installing' | 'error'
+  downloaded: number
+  total: number
+  version: string | null
+  includes_singbox: boolean
+  error: string | null
 }
 
 /** 仪表盘运行信息：核心运行时长、内网 IP、代理端口、内存占用（字节）。 */
@@ -85,6 +103,11 @@ export const api = {
   memDebug: () => req('GET', '/api/debug/memory'),
   version: () => req('GET', '/api/version'),
   checkUpdate: (): Promise<UpdateCheckResult> => req('GET', '/api/update/check'),
+  /** 下载并校验更新包（后台任务，用 updateProgress 查进度） */
+  updateApply: () => req('POST', '/api/update/apply'),
+  /** 重启并安装已下载的更新 */
+  updateInstall: () => req('POST', '/api/update/install'),
+  updateProgress: (): Promise<UpdateProgress> => req('GET', '/api/update/progress'),
   /** 连接明细：仅打开管理页时按需拉取，后台不常驻轮询 */
   connections: () => req('GET', '/api/connections'),
   closeConnection: (id: string) => req('DELETE', '/api/connections/' + encodeURIComponent(id)),

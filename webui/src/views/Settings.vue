@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { store, toast } from '../store'
-import { api, type UpdateCheckResult } from '../api'
+import { api, type UpdateCheckResult, type UpdateProgress } from '../api'
 import Modal from '../components/Modal.vue'
 
 const form = reactive({ ...store.config })
@@ -48,7 +48,9 @@ const updateResult = ref<UpdateCheckResult | null>(null)
 const updateError = ref('')
 const updateMessage = computed(() => {
   if (checkingUpdate.value) return '正在检查 GitHub 最新正式版…'
-  if (updateError.value) return '检查更新失败：' + updateError.value
+  if (updateError.value) {
+    return (updateResult.value ? '更新失败：' : '检查更新失败：') + updateError.value
+  }
   const result = updateResult.value
   if (!result) return ''
   switch (result.status) {
@@ -60,7 +62,7 @@ const updateMessage = computed(() => {
 })
 
 async function checkForUpdates() {
-  if (checkingUpdate.value) return
+  if (checkingUpdate.value || updating.value) return
   checkingUpdate.value = true
   updateResult.value = null
   updateError.value = ''
@@ -73,6 +75,101 @@ async function checkForUpdates() {
     checkingUpdate.value = false
   }
 }
+
+/* ---------- 一键更新：下载 → 校验 → 重启安装 ---------- */
+const updating = ref(false)
+const updateProgress = ref<UpdateProgress | null>(null)
+let updateTimer: number | null = null
+
+function stopUpdatePolling() {
+  if (updateTimer) {
+    window.clearInterval(updateTimer)
+    updateTimer = null
+  }
+}
+
+function fmtSize(n: number): string {
+  if (!n) return '0 B'
+  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB'
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
+  if (n >= 1024) return (n / 1024).toFixed(0) + ' KB'
+  return n + ' B'
+}
+
+const autoUpdateSize = computed(() => {
+  const r = updateResult.value
+  if (!r || r.status !== 'update_available') return 0
+  return r.update_asset?.size || r.full_asset?.size || 0
+})
+const canAutoUpdate = computed(() =>
+  !!updateResult.value && updateResult.value.status === 'update_available' && autoUpdateSize.value > 0,
+)
+const updatePct = computed(() => {
+  const p = updateProgress.value
+  if (!p || !p.total) return 0
+  return Math.min(100, Math.round((p.downloaded / p.total) * 100))
+})
+const updateProgressText = computed(() => {
+  const p = updateProgress.value
+  if (!p) return ''
+  switch (p.state) {
+    case 'downloading':
+      return p.total
+        ? `正在下载 ${fmtSize(p.downloaded)} / ${fmtSize(p.total)}`
+        : `正在下载 ${fmtSize(p.downloaded)}`
+    case 'extracting':
+      return '正在校验并解压…'
+    case 'ready':
+      return '下载完成，正在重启安装…'
+    case 'installing':
+      return '正在安装，程序即将重启…'
+    default:
+      return ''
+  }
+})
+
+async function startUpdate() {
+  if (updating.value || !canAutoUpdate.value) return
+  updating.value = true
+  updateError.value = ''
+  updateProgress.value = null
+  try {
+    await api.updateApply()
+    stopUpdatePolling()
+    updateTimer = window.setInterval(pollUpdate, 500)
+  } catch (e: any) {
+    updating.value = false
+    updateError.value = e.message || '无法开始更新'
+  }
+}
+
+async function pollUpdate() {
+  try {
+    const p = await api.updateProgress()
+    updateProgress.value = p
+    if (p.state === 'error') {
+      stopUpdatePolling()
+      updating.value = false
+      updateError.value = p.error || '更新失败'
+      return
+    }
+    if (p.state === 'ready') {
+      stopUpdatePolling()
+      try {
+        await api.updateInstall()
+        // 程序重启后回到管理面板，显示新版本号
+        window.setTimeout(() => location.reload(), 8000)
+      } catch (e: any) {
+        updating.value = false
+        updateError.value = e.message || '启动安装失败'
+      }
+    }
+  } catch {
+    // 安装时进程退出会让请求失败，交给下一次轮询或重启判断
+  }
+}
+
+onBeforeUnmount(stopUpdatePolling)
 
 /* ---------- TUN 提权引导 ---------- */
 const showElevateDialog = ref(false)
@@ -107,7 +204,7 @@ function onElevateCancel() {
           </svg>
           GitHub
         </a>
-        <button :disabled="checkingUpdate" :aria-busy="checkingUpdate" @click="checkForUpdates">
+        <button :disabled="checkingUpdate || updating" :aria-busy="checkingUpdate" @click="checkForUpdates">
           {{ checkingUpdate ? '检查中…' : '检查更新' }}
         </button>
         <button class="primary" @click="save">保存设置</button>
@@ -115,7 +212,7 @@ function onElevateCancel() {
     </header>
 
     <div
-      v-if="checkingUpdate || updateResult || updateError"
+      v-if="checkingUpdate || updateResult || updateError || updateProgress"
       class="update-status"
       :class="{ 'has-update': updateResult?.status === 'update_available', 'is-error': !!updateError }"
       role="status"
@@ -123,8 +220,21 @@ function onElevateCancel() {
       aria-atomic="true"
     >
       <span>{{ updateMessage }}</span>
+      <span v-if="updateProgressText" class="update-progress-text">{{ updateProgressText }}</span>
+      <span
+        v-if="updateProgress && (updateProgress.state === 'downloading' || updateProgress.state === 'extracting')"
+        class="update-bar"
+        role="progressbar"
+        :aria-valuenow="updatePct"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      ><i :style="{ width: updatePct + '%' }"></i></span>
+      <button v-if="updating" class="update-btn" disabled>更新中…</button>
+      <button v-else-if="canAutoUpdate" class="update-btn" @click="startUpdate">
+        立即更新（{{ fmtSize(autoUpdateSize) }}）
+      </button>
       <a
-        v-if="!checkingUpdate && (updateResult?.status === 'update_available' || updateResult?.status === 'no_release' || updateError)"
+        v-if="!updating && !checkingUpdate && (updateResult?.status === 'update_available' || updateResult?.status === 'no_release' || updateError)"
         :href="updateResult?.release_url || releasesUrl"
         target="_blank"
         rel="noopener noreferrer"
@@ -281,6 +391,20 @@ function onElevateCancel() {
 .update-status.is-error { border-color: #f0c1bc; background: var(--red-bg); color: var(--red); }
 .update-status a { color: var(--primary-d); font-weight: 600; text-underline-offset: 3px; }
 .update-status a:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.update-progress-text { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.update-bar { flex: 1 1 100%; height: 6px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+.update-bar i { display: block; height: 100%; background: var(--primary); transition: width .2s; }
+.update-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.update-btn:hover:not(:disabled) { background: var(--primary-d); border-color: var(--primary-d); }
+.update-btn:disabled { opacity: .6; cursor: default; }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .settings-column { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 .settings-card {

@@ -87,6 +87,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/connections/:id", delete(handlers::close_connection))
         .route("/api/version", get(handlers::get_version))
         .route("/api/update/check", get(updates::check_update))
+        .route("/api/update/apply", post(updates::apply_update))
+        .route("/api/update/install", post(updates::install_update))
+        .route("/api/update/progress", get(updates::update_progress))
         .route("/api/traffic/daily", get(handlers::traffic_daily))
         .route("/api/ws", get(ws::ws_handler))
         // fallback 必须在 with_state 之前：先有 Router<()> 再注入 state。

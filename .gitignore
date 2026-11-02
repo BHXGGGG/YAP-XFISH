@@ -69,6 +69,8 @@ proxy_rs.pdb
 /release/*.exe
 /release/**/*.exe
 /release/**/*.dll
+# 更新包清单由 build_release_zip.py 按当前 sing-box 生成
+/release/update.json
 
 # ===== Hermes 本地会话/计划（不属于仓库） =====
 /.hermes/

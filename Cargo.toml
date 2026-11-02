@@ -1,6 +1,6 @@
 [package]
 name = "yap-xfish"
-version = "0.1.49"
+version = "0.1.50"
 edition = "2021"
 default-run = "yap-xfish"
 description = "YAP-XFISH — Windows Sing-box 代理客户端（WebUI + 托盘）"
@@ -19,6 +19,8 @@ thiserror = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "socks"] }
+sha2 = "0.10"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 once_cell = "1"
 cron = "0.12"

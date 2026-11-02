@@ -1,12 +1,23 @@
 use super::*;
 use axum::{http::HeaderMap, response::IntoResponse, routing::get, Router};
 use serde_json::json;
+use std::io::Write;
 
 fn release(tag: &str) -> GitHubRelease {
     GitHubRelease {
         tag_name: tag.to_owned(),
         draft: false,
         prerelease: false,
+        assets: Vec::new(),
+    }
+}
+
+fn asset(name: &str, size: u64) -> GitHubAsset {
+    GitHubAsset {
+        name: name.to_owned(),
+        size,
+        browser_download_url: format!("https://example.invalid/{name}"),
+        digest: None,
     }
 }
 
@@ -178,6 +189,118 @@ async fn stalled_request_times_out_with_a_readable_error() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("超时"));
+}
+
+#[test]
+fn reports_both_asset_kinds() {
+    let mut published = release("v0.2.0");
+    published.assets = vec![
+        asset("yap-xfish-v0.2.0-update.zip", 6_000_000),
+        asset("yap-xfish-v0.2.0-windows-amd64.zip", 34_000_000),
+        asset("notes.txt", 10),
+    ];
+    let result = release_report("0.1.41", published).unwrap();
+    assert_eq!(result.update_asset.unwrap().size, 6_000_000);
+    assert_eq!(result.full_asset.unwrap().size, 34_000_000);
+}
+
+#[test]
+fn builds_a_script_that_waits_and_restarts() {
+    let exe_dir = Path::new("C:\\YAP XFISH");
+    let script = build_script(exe_dir, Path::new("C:\\data\\update\\stage"), 4242, Path::new("C:\\data\\update"), false);
+    assert!(script.contains("$targetPid = 4242"));
+    assert!(script.contains("'C:\\YAP XFISH'"));
+    assert!(script.contains("$skipStart = $false"));
+    assert!(script.contains("Start-Process -FilePath $exe"));
+    let skipped = build_script(exe_dir, Path::new("C:\\stage"), 1, Path::new("C:\\u"), true);
+    assert!(skipped.contains("$skipStart = $true"));
+}
+
+#[test]
+fn extracts_only_allowlisted_files() {
+    let dir = std::env::temp_dir().join(format!("yap-update-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let zip_path = dir.join("update.zip");
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, body) in [
+            ("yap-xfish.exe", "app"),
+            ("libcronet.dll", "dll"),
+            ("sing-box.exe", "core"),
+            ("../evil.exe", "evil"),
+            ("update.json", "{}"),
+        ] {
+            writer.start_file(name, opts).unwrap();
+            writer.write_all(body.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    let stage = dir.join("stage");
+    fs::create_dir_all(&stage).unwrap();
+    let files = extract_zip(&zip_path, &stage, false).unwrap();
+    assert_eq!(
+        files,
+        vec!["yap-xfish.exe".to_string(), "libcronet.dll".to_string()]
+    );
+    assert!(stage.join("yap-xfish.exe").exists());
+    assert!(!stage.join("sing-box.exe").exists());
+    assert!(!stage.join("evil.exe").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "runs PowerShell"]
+fn generated_script_replaces_files_in_a_sandbox() {
+    let dir = std::env::temp_dir().join(format!("yap-update-script-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let install = dir.join("install");
+    let stage = dir.join("stage");
+    fs::create_dir_all(&install).unwrap();
+    fs::create_dir_all(&stage).unwrap();
+    fs::write(install.join("yap-xfish.exe"), "old").unwrap();
+    fs::write(stage.join("yap-xfish.exe"), "new").unwrap();
+    fs::write(stage.join("libcronet.dll"), "dll").unwrap();
+    let script = dir.join("apply.ps1");
+    // 999999 不存在，脚本会立即越过等待；skip_start 避免在测试里拉起进程
+    fs::write(&script, build_script(&install, &stage, 999_999, &dir, true)).unwrap();
+
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(fs::read_to_string(install.join("yap-xfish.exe")).unwrap(), "new");
+    assert!(install.join("libcronet.dll").exists());
+    assert!(!stage.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[ignore = "downloads the real release asset"]
+async fn live_download_verifies_and_extracts() {
+    let port: u16 = std::env::var("YAP_PROXY_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(10020);
+    let client = build_client_with_timeout(Some(port), Duration::from_secs(15 * 60)).unwrap();
+    let release = fetch_release(&client, LATEST_RELEASE_API).await.unwrap().unwrap();
+    let asset = release
+        .asset_suffix("-update.zip")
+        .or_else(|| release.asset_suffix("-windows-amd64.zip"))
+        .expect("release has no archive");
+    let dir = std::env::temp_dir().join(format!("yap-update-live-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let zip_path = dir.join("asset.zip");
+    download_asset(&client, asset, &zip_path).await.unwrap();
+    let stage = dir.join("stage");
+    fs::create_dir_all(&stage).unwrap();
+    let files = extract_zip(&zip_path, &stage, asset.name.ends_with("-windows-amd64.zip")).unwrap();
+    println!("{} -> {files:?}", asset.name);
+    assert!(files.iter().any(|f| f == "yap-xfish.exe"));
+    assert!(stage.join("yap-xfish.exe").metadata().unwrap().len() > 1_000_000);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

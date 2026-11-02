@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -9,8 +11,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REL = ROOT / "release"
 WEBUI = ROOT / "webui"
+# 整体包：首次安装 / sing-box 也更新时使用
 FILES = ["yap-xfish.exe", "sing-box.exe", "libcronet.dll", "README.txt"]
+# 更新包：只含程序自身文件，自动更新默认下载它（体积小）
+UPDATE_FILES = ["yap-xfish.exe", "libcronet.dll", "README.txt", "update.json"]
 VERSION_RE = re.compile(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"\s*$', re.MULTILINE)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def read_version() -> str:
@@ -51,14 +64,30 @@ def main() -> None:
                 raise RuntimeError(f"缺少 {path}")
             print(f"  {name:16} {path.stat().st_size:>10} bytes")
 
+        # 更新包清单：程序检查更新时用它判断 sing-box 是否有变化
+        manifest = {"version": version, "singbox_sha256": sha256(REL / "sing-box.exe")}
+        (REL / "update.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
         zip_path = REL / f"yap-xfish-v{version}-windows-amd64.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
             for name in FILES:
                 archive.write(REL / name, name)
-        with zipfile.ZipFile(zip_path) as archive:
-            if bad_file := archive.testzip():
-                raise RuntimeError(f"压缩包校验失败: {bad_file}")
-        print(f"已打包: {zip_path} ({zip_path.stat().st_size} bytes) @ {datetime.now():%H:%M:%S}")
+
+        update_zip = REL / f"yap-xfish-v{version}-update.zip"
+        with zipfile.ZipFile(update_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name in UPDATE_FILES:
+                archive.write(REL / name, name)
+
+        for path in (zip_path, update_zip):
+            with zipfile.ZipFile(path) as archive:
+                if bad_file := archive.testzip():
+                    raise RuntimeError(f"压缩包校验失败: {bad_file}")
+            print(
+                f"已打包: {path.name} ({path.stat().st_size} bytes, "
+                f"sha256 {sha256(path)[:16]}…) @ {datetime.now():%H:%M:%S}"
+            )
     except Exception:
         readme.write_text(original_readme, encoding="utf-8")
         raise
