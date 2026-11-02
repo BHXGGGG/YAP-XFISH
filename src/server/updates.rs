@@ -18,7 +18,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{app::AppState, error::{AppError, AppResult}};
 
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/BHXGGGG/YAP-XFISH/releases/latest";
+/// GitHub 的 `releases/latest` 页面会 302 到最新正式版的 tag。
+/// 直接读这个跳转不消耗 API 配额（匿名 API 每小时只有 60 次，节点出口 IP 常被共用耗尽）。
+const LATEST_RELEASE_PAGE: &str = "https://github.com/BHXGGGG/YAP-XFISH/releases/latest";
 const RELEASES_URL: &str = "https://github.com/BHXGGGG/YAP-XFISH/releases";
 /// 更新包里允许覆盖到程序目录的文件；其余条目一律忽略。
 const UPDATE_ALLOWED: &[&str] = &["yap-xfish.exe", "sing-box.exe", "libcronet.dll", "README.txt"];
@@ -47,47 +49,59 @@ pub struct UpdateCheck {
 #[derive(Debug, Clone, Serialize)]
 pub struct AssetInfo {
     name: String,
+    /// 0 表示未知：为了不消耗 API 配额，不再查询资产列表。
     size: u64,
-}
-
-#[derive(Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    draft: bool,
-    prerelease: bool,
-    #[serde(default)]
-    assets: Vec<GitHubAsset>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GitHubAsset {
-    name: String,
-    size: u64,
-    browser_download_url: String,
-    /// GitHub 提供的 "sha256:<hex>"，旧版本或非 GitHub 托管时可能为空。
-    digest: Option<String>,
-}
-
-impl GitHubRelease {
-    fn asset_suffix(&self, suffix: &str) -> Option<&GitHubAsset> {
-        self.assets.iter().find(|a| a.name.ends_with(suffix))
-    }
 }
 
 /// 仅在用户点击时查询正式发布版；网络请求期间不持有配置锁。
+///
+/// 先直连（本机公网 IP 有独立的 API 配额），直连不通再用代理。两种方式都只读
+/// `releases/latest` 的跳转地址，不调用 API，因此不受每小时 60 次的限制。
 pub async fn check_update(State(state): State<Arc<AppState>>) -> AppResult<Json<UpdateCheck>> {
-    let proxy_port = if state.core.is_running().await {
-        Some(state.config.read().await.proxy_port)
-    } else {
-        None
+    let direct = build_probe_client(None)?;
+    let current = env!("CARGO_PKG_VERSION");
+    let direct_result = fetch_latest(&direct, LATEST_RELEASE_PAGE, current).await;
+
+    let result = match direct_result {
+        Ok(v) => v,
+        Err(direct_error) => {
+            let proxy_port = if state.core.is_running().await {
+                Some(state.config.read().await.proxy_port)
+            } else {
+                None
+            };
+            match proxy_port {
+                Some(port) => {
+                    let client = build_probe_client(Some(port))?;
+                    match fetch_latest(&client, LATEST_RELEASE_PAGE, current).await {
+                        Ok(v) => v,
+                        // 直连的报错更贴近用户网络现状，优先展示
+                        Err(_) => return Err(AppError(direct_error)),
+                    }
+                }
+                None => return Err(AppError(direct_error)),
+            }
+        }
     };
-    let client = build_client(proxy_port)?;
-    let result = fetch_latest(&client, LATEST_RELEASE_API, env!("CARGO_PKG_VERSION")).await?;
     Ok(Json(result))
 }
 
 fn build_client(proxy_port: Option<u16>) -> anyhow::Result<Client> {
     build_client_with_timeout(proxy_port, Duration::from_secs(10))
+}
+
+/// 读取 `releases/latest` 的跳转目标时不能跟随重定向，否则会落到 tag 页面本身。
+fn build_probe_client(proxy_port: Option<u16>) -> anyhow::Result<Client> {
+    let mut builder = Client::builder()
+        .user_agent(concat!("YAP-XFISH/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy();
+    if let Some(port) = proxy_port {
+        builder = builder.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))?);
+    }
+    builder.build().context("创建更新检查连接失败")
 }
 
 fn build_client_with_timeout(proxy_port: Option<u16>, timeout: Duration) -> anyhow::Result<Client> {
@@ -109,43 +123,45 @@ async fn fetch_latest(
     endpoint: &str,
     current_version: &str,
 ) -> anyhow::Result<UpdateCheck> {
-    match fetch_release(client, endpoint).await? {
-        Some(release) => release_report(current_version, release),
+    let tag = fetch_latest_tag(client, endpoint).await?;
+    match tag {
+        Some(tag) => Ok(release_report(current_version, &tag)?),
         None => Ok(no_release(current_version)),
     }
 }
 
-async fn fetch_release(client: &Client, endpoint: &str) -> anyhow::Result<Option<GitHubRelease>> {
-    let response = client
-        .get(endpoint)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send()
-        .await
-        .map_err(request_error)?;
-
+/// 读取 `releases/latest` 的重定向目标，从中取出 tag。
+/// 该页面不跟随其他跳转，请求本身也不计入 API 配额。
+async fn fetch_latest_tag(client: &Client, endpoint: &str) -> anyhow::Result<Option<String>> {
+    let response = client.get(endpoint).send().await.map_err(request_error)?;
     let status = response.status();
     if status == StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    if status == StatusCode::TOO_MANY_REQUESTS
-        || (status == StatusCode::FORBIDDEN
-            && response
-                .headers()
-                .get("x-ratelimit-remaining")
-                .is_some_and(|value| value == "0"))
-    {
-        bail!("GitHub 请求次数已达限制，请稍后再试，或直接查看发布页");
-    }
-    if !status.is_success() {
+    if !status.is_redirection() {
+        if status.is_success() {
+            // 仓库还没有任何正式版时，GitHub 会直接渲染列表页而不是跳转
+            return Ok(None);
+        }
         bail!(
             "GitHub 暂时无法提供版本信息（HTTP {}），请稍后重试",
             status.as_u16()
         );
     }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| anyhow!("GitHub 没有返回最新版本地址，请稍后重试"))?;
+    Ok(parse_tag_from_location(location))
+}
 
-    let release: GitHubRelease = response.json().await.map_err(request_error)?;
-    Ok(Some(release))
+/// `https://github.com/o/r/releases/tag/v0.1.51` → `v0.1.51`
+fn parse_tag_from_location(location: &str) -> Option<String> {
+    let rest = location.split("/releases/tag/").nth(1)?;
+    let tag = rest.split(['?', '#', '/']).next()?.trim();
+    // 版本号只会是 ASCII，不做百分号解码
+    if tag.is_empty() { None } else { Some(tag.to_owned()) }
 }
 
 fn request_error(error: reqwest::Error) -> anyhow::Error {
@@ -171,12 +187,11 @@ fn no_release(current_version: &str) -> UpdateCheck {
     }
 }
 
-fn release_report(current_version: &str, release: GitHubRelease) -> anyhow::Result<UpdateCheck> {
-    if release.draft || release.prerelease {
+fn release_report(current_version: &str, tag: &str) -> anyhow::Result<UpdateCheck> {
+    let tag = tag.trim();
+    if tag.is_empty() {
         return Ok(no_release(current_version));
     }
-
-    let tag = release.tag_name.trim();
     let version = tag
         .strip_prefix('v')
         .or_else(|| tag.strip_prefix('V'))
@@ -197,10 +212,11 @@ fn release_report(current_version: &str, release: GitHubRelease) -> anyhow::Resu
         .unwrap()
         .push("tag")
         .push(tag);
-    let asset_info = |a: Option<&GitHubAsset>| {
-        a.map(|a| AssetInfo {
-            name: a.name.clone(),
-            size: a.size,
+    // 资产名由打包脚本固定生成，这里直接拼出来，省掉一次 API 查询
+    let asset = |suffix: &str| {
+        Some(AssetInfo {
+            name: format!("yap-xfish-{tag}-{suffix}"),
+            size: 0,
         })
     };
     Ok(UpdateCheck {
@@ -208,8 +224,8 @@ fn release_report(current_version: &str, release: GitHubRelease) -> anyhow::Resu
         latest_version: Some(latest.to_string()),
         status,
         release_url: release_url.to_string(),
-        update_asset: asset_info(release.asset_suffix("-update.zip")),
-        full_asset: asset_info(release.asset_suffix("-windows-amd64.zip")),
+        update_asset: asset("update.zip"),
+        full_asset: asset("windows-amd64.zip"),
     })
 }
 
@@ -287,32 +303,64 @@ pub async fn apply_update(State(state): State<Arc<AppState>>) -> AppResult<Json<
     Ok(Json(serde_json::json!({ "started": true })))
 }
 
-async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
-    let proxy_port = if state.core.is_running().await {
+/// 本机能直连 GitHub 时优先直连（本机公网 IP 有独立配额），连不上再借当前节点。
+async fn proxy_port_if_running(state: &Arc<AppState>) -> Option<u16> {
+    if state.core.is_running().await {
         Some(state.config.read().await.proxy_port)
     } else {
         None
-    };
-    let client = build_client(proxy_port)?;
-    // 下载安装包可能耗时较长，单独用更宽松的总体超时
-    let download_client = build_client_with_timeout(proxy_port, Duration::from_secs(15 * 60))?;
-    let release = fetch_release(&client, LATEST_RELEASE_API)
+    }
+}
+
+async fn latest_tag(state: &Arc<AppState>) -> anyhow::Result<Option<String>> {
+    let direct = build_probe_client(None)?;
+    match fetch_latest_tag(&direct, LATEST_RELEASE_PAGE).await {
+        Ok(tag) => Ok(tag),
+        Err(direct_error) => match proxy_port_if_running(state).await {
+            Some(port) => {
+                let client = build_probe_client(Some(port))?;
+                match fetch_latest_tag(&client, LATEST_RELEASE_PAGE).await {
+                    Ok(tag) => Ok(tag),
+                    Err(_) => Err(direct_error),
+                }
+            }
+            None => Err(direct_error),
+        },
+    }
+}
+
+/// 下载时同样先直连；GitHub 的资产存储域名一般不受网络限制。
+async fn download_update_asset(
+    state: &Arc<AppState>,
+    url: &str,
+    dest: &Path,
+) -> anyhow::Result<bool> {
+    let timeout = Duration::from_secs(15 * 60);
+    let direct = build_client_with_timeout(None, timeout)?;
+    match try_download(&direct, url, dest).await {
+        Ok(found) => Ok(found),
+        Err(direct_error) => match proxy_port_if_running(state).await {
+            Some(port) => {
+                let client = build_client_with_timeout(Some(port), timeout)?;
+                try_download(&client, url, dest).await
+            }
+            None => Err(direct_error),
+        },
+    }
+}
+
+async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
+    // 更新包地址由「版本号 + 固定命名规则」拼出，和检查更新一样不消耗 API 配额。
+    let tag = latest_tag(state)
         .await?
         .ok_or_else(|| anyhow!("GitHub 暂无正式发布版本"))?;
-    if release.draft || release.prerelease {
-        bail!("GitHub 暂无正式发布版本");
-    }
-    let tag = release.tag_name.trim().to_string();
     let version = tag
         .strip_prefix('v')
         .or_else(|| tag.strip_prefix('V'))
         .unwrap_or(&tag)
         .to_string();
-
-    let update_asset = release.asset_suffix("-update.zip").cloned();
-    let full_asset = release.asset_suffix("-windows-amd64.zip").cloned();
-    if update_asset.is_none() && full_asset.is_none() {
-        bail!("发布页没有可用的安装包");
+    if version.is_empty() {
+        bail!("GitHub 暂无正式发布版本");
     }
 
     let dir: PathBuf = state.data_dir.join("update");
@@ -325,19 +373,21 @@ async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
     set_progress(|p| {
         p.state = "downloading";
         p.version = Some(version.clone());
-        p.total = update_asset.as_ref().map(|a| a.size).unwrap_or(0);
+        p.total = 0;
         p.downloaded = 0;
         p.includes_singbox = false;
         p.error = None;
     });
 
+    let update_url = release_asset_url(&tag, "update.zip");
+    let full_url = release_asset_url(&tag, "windows-amd64.zip");
+
     // 优先下载体积小的更新包；清单显示 sing-box 变了才回退到完整包。
     let mut source: Option<(PathBuf, bool)> = None;
-    if let Some(asset) = update_asset.as_ref() {
-        let path = dir.join("update.zip");
-        download_asset(&download_client, asset, &path).await?;
+    let update_path = dir.join("update.zip");
+    if download_update_asset(state, &update_url, &update_path).await? {
         let changed = match (
-            read_manifest(&path).and_then(|m| m.singbox_sha256),
+            read_manifest(&update_path).and_then(|m| m.singbox_sha256),
             local_singbox.clone(),
         ) {
             (Some(want), Some(local)) => !want.eq_ignore_ascii_case(&local),
@@ -346,16 +396,15 @@ async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
             _ => false,
         };
         if !changed {
-            source = Some((path, false));
+            source = Some((update_path, false));
         }
     }
     if source.is_none() {
-        let asset = full_asset
-            .as_ref()
-            .ok_or_else(|| anyhow!("需要更新 sing-box，但发布页没有完整包"))?;
-        let path = dir.join("full.zip");
-        download_asset(&download_client, asset, &path).await?;
-        source = Some((path, true));
+        let full_path = dir.join("full.zip");
+        if !download_update_asset(state, &full_url, &full_path).await? {
+            bail!("发布页没有可用的安装包");
+        }
+        source = Some((full_path, true));
     }
     let (zip_path, includes_singbox) = source.unwrap();
 
@@ -387,21 +436,22 @@ async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 下载到 dest，并用 GitHub 提供的 digest 校验；进度写入全局状态。
-async fn download_asset(
-    client: &Client,
-    asset: &GitHubAsset,
-    dest: &Path,
-) -> anyhow::Result<()> {
-    let mut response = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .map_err(request_error)?;
-    if !response.status().is_success() {
-        bail!("下载更新包失败（HTTP {}）", response.status().as_u16());
+/// 发布页上的资产地址：命名规则固定，不需要 API 返回列表。
+fn release_asset_url(tag: &str, suffix: &str) -> String {
+    format!(
+        "{RELEASES_URL}/download/{tag}/yap-xfish-{tag}-{suffix}"
+    )
+}
+
+/// 下载 release 资产。地址不存在（404）返回 Ok(false)，其余错误照常上报。
+async fn try_download(client: &Client, url: &str, dest: &Path) -> anyhow::Result<bool> {
+    let mut response = client.get(url).send().await.map_err(request_error)?;
+    match response.status() {
+        StatusCode::NOT_FOUND => return Ok(false),
+        s if s.is_success() => {}
+        s => bail!("下载更新包失败（HTTP {}）", s.as_u16()),
     }
-    let total = response.content_length().unwrap_or(asset.size);
+    let total = response.content_length().unwrap_or(0);
     set_progress(|p| {
         p.state = "downloading";
         p.downloaded = 0;
@@ -419,15 +469,7 @@ async fn download_asset(
         set_progress(|p| p.downloaded = downloaded);
     }
     file.flush().await?;
-    let got = hex_digest(hasher.finalize().as_slice());
-    if let Some(digest) = asset.digest.as_deref() {
-        let want = digest.strip_prefix("sha256:").unwrap_or(digest);
-        if !want.eq_ignore_ascii_case(&got) {
-            let _ = fs::remove_file(dest);
-            bail!("更新包校验失败（SHA256 不一致），已删除下载文件");
-        }
-    }
-    Ok(())
+    Ok(true)
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

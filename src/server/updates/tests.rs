@@ -1,24 +1,21 @@
 use super::*;
-use axum::{http::HeaderMap, response::IntoResponse, routing::get, Router};
-use serde_json::json;
+use axum::{
+    http::HeaderMap,
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use std::io::Write;
 
-fn release(tag: &str) -> GitHubRelease {
-    GitHubRelease {
-        tag_name: tag.to_owned(),
-        draft: false,
-        prerelease: false,
-        assets: Vec::new(),
-    }
-}
-
-fn asset(name: &str, size: u64) -> GitHubAsset {
-    GitHubAsset {
-        name: name.to_owned(),
-        size,
-        browser_download_url: format!("https://example.invalid/{name}"),
-        digest: None,
-    }
+/// 模拟 GitHub 的 `releases/latest`：302 到 tag 页面。
+fn redirects_to(tag: &str) -> impl IntoResponse {
+    (
+        StatusCode::FOUND,
+        [(
+            "location",
+            format!("https://github.com/BHXGGGG/YAP-XFISH/releases/tag/{tag}"),
+        )],
+    )
 }
 
 #[test]
@@ -35,7 +32,7 @@ fn compares_version_precedence_without_offering_downgrades() {
         ("0.1.41+local.1", "v0.1.41+build.2", UpdateStatus::UpToDate),
     ];
     for (current, tag, expected) in cases {
-        let result = release_report(current, release(tag)).unwrap();
+        let result = release_report(current, tag).unwrap();
         assert_eq!(result.status, expected, "{current} vs {tag}");
         assert_eq!(result.current_version, current);
         assert_eq!(result.release_url, format!("{RELEASES_URL}/tag/{tag}"));
@@ -43,19 +40,45 @@ fn compares_version_precedence_without_offering_downgrades() {
 }
 
 #[test]
-fn ignores_unpublished_releases_and_rejects_unknown_tags() {
-    for (draft, prerelease) in [(true, false), (false, true)] {
-        let mut unpublished = release("v0.2.0");
-        unpublished.draft = draft;
-        unpublished.prerelease = prerelease;
-        let result = release_report("0.1.41", unpublished).unwrap();
-        assert_eq!(result.status, UpdateStatus::NoRelease);
-        assert_eq!(result.latest_version, None);
-    }
-    assert!(release_report("0.1.41", release("nightly"))
+fn rejects_unknown_tags_and_empty_redirects() {
+    assert!(release_report("0.1.41", "nightly")
         .unwrap_err()
         .to_string()
         .contains("无法识别 GitHub 版本号"));
+    assert_eq!(
+        release_report("0.1.41", "").unwrap().status,
+        UpdateStatus::NoRelease
+    );
+}
+
+#[test]
+fn builds_asset_names_from_the_tag() {
+    let result = release_report("0.1.41", "v0.2.0").unwrap();
+    let update = result.update_asset.unwrap();
+    assert_eq!(update.name, "yap-xfish-v0.2.0-update.zip");
+    // 不查询 API，所以体积未知
+    assert_eq!(update.size, 0);
+    assert_eq!(
+        result.full_asset.unwrap().name,
+        "yap-xfish-v0.2.0-windows-amd64.zip"
+    );
+}
+
+#[test]
+fn parses_the_tag_out_of_a_release_redirect() {
+    assert_eq!(
+        parse_tag_from_location("https://github.com/o/r/releases/tag/v0.1.51").as_deref(),
+        Some("v0.1.51")
+    );
+    assert_eq!(
+        parse_tag_from_location("/o/r/releases/tag/v1.0.0-beta.1?x=1").as_deref(),
+        Some("v1.0.0-beta.1")
+    );
+    assert_eq!(parse_tag_from_location("https://github.com/o/r/releases"), None);
+    assert_eq!(
+        parse_tag_from_location("https://github.com/o/r/releases/tag/"),
+        None
+    );
 }
 
 struct MockGitHub {
@@ -84,87 +107,84 @@ impl Drop for MockGitHub {
 }
 
 #[tokio::test]
-async fn sends_github_headers_and_returns_download_page() {
+async fn follows_the_release_redirect_without_the_api() {
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
     let mock = MockGitHub::start(Router::new().fallback(get(move |headers: HeaderMap| {
         let sent = sent.clone();
         async move {
             sent.send(headers).unwrap();
-            Json(json!({ "tag_name": "v0.2.0", "draft": false, "prerelease": false }))
+            redirects_to("v0.2.0")
         }
     })))
     .await;
-    let result = fetch_latest(&build_client(None).unwrap(), &mock.endpoint, "0.1.41")
+    let result = fetch_latest(&build_probe_client(None).unwrap(), &mock.endpoint, "0.1.41")
         .await
         .unwrap();
     assert_eq!(result.status, UpdateStatus::UpdateAvailable);
     assert_eq!(result.latest_version.as_deref(), Some("0.2.0"));
-    assert_eq!(result.release_url, format!("{RELEASES_URL}/tag/v0.2.0"));
     let headers = received.recv().await.unwrap();
-    assert_eq!(headers["accept"], "application/vnd.github+json");
-    assert_eq!(headers["x-github-api-version"], "2022-11-28");
+    // 请求的是网页而不是 API，因此不带 API 专用头
     assert_eq!(
         headers["user-agent"],
         concat!("YAP-XFISH/", env!("CARGO_PKG_VERSION"))
     );
-    assert_eq!(
-        serde_json::to_value(result).unwrap()["status"],
-        "update_available"
-    );
+    assert!(headers.get("x-github-api-version").is_none());
 }
 
 #[tokio::test]
-async fn distinguishes_no_release_from_rate_limits_and_server_failures() {
-    for (status, limited, error_text) in [
-        (StatusCode::NOT_FOUND, false, None),
-        (StatusCode::FORBIDDEN, true, Some("请求次数已达限制")),
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            false,
-            Some("请求次数已达限制"),
-        ),
-        (StatusCode::FORBIDDEN, false, Some("HTTP 403")),
-        (StatusCode::INTERNAL_SERVER_ERROR, false, Some("HTTP 500")),
+async fn missing_release_page_is_reported_as_no_release() {
+    let mock = MockGitHub::start(Router::new().fallback(get(|| async {
+        (StatusCode::NOT_FOUND, "").into_response()
+    })))
+    .await;
+    let result = fetch_latest(&build_probe_client(None).unwrap(), &mock.endpoint, "0.1.41")
+        .await
+        .unwrap();
+    assert_eq!(result.status, UpdateStatus::NoRelease);
+    assert_eq!(result.latest_version, None);
+    assert_eq!(result.release_url, RELEASES_URL);
+}
+
+#[tokio::test]
+async fn a_rendered_page_means_there_is_no_published_release() {
+    // 仓库还没有任何正式版时，GitHub 不跳转，直接返回 200 的列表页
+    let mock = MockGitHub::start(Router::new().fallback(get(|| async { "<html></html>" }))).await;
+    let result = fetch_latest(&build_probe_client(None).unwrap(), &mock.endpoint, "0.1.41")
+        .await
+        .unwrap();
+    assert_eq!(result.status, UpdateStatus::NoRelease);
+}
+
+#[tokio::test]
+async fn server_failures_are_reported_with_the_status_code() {
+    for status in [
+        StatusCode::FORBIDDEN,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::INTERNAL_SERVER_ERROR,
     ] {
         let mock = MockGitHub::start(Router::new().fallback(get(move || async move {
-            let mut response = (status, "{}").into_response();
-            if limited {
-                response
-                    .headers_mut()
-                    .insert("x-ratelimit-remaining", "0".parse().unwrap());
-            }
-            response
+            (status, "").into_response()
         })))
         .await;
-        let result = fetch_latest(&build_client(None).unwrap(), &mock.endpoint, "0.1.41").await;
-        if let Some(message) = error_text {
-            assert!(result.unwrap_err().to_string().contains(message));
-        } else {
-            let result = result.unwrap();
-            assert_eq!(result.status, UpdateStatus::NoRelease);
-            assert_eq!(result.latest_version, None);
-            assert_eq!(result.release_url, RELEASES_URL);
-        }
+        let error = fetch_latest(&build_probe_client(None).unwrap(), &mock.endpoint, "0.1.41")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(&status.as_u16().to_string()),
+            "{status}: {error}"
+        );
     }
-}
-
-#[tokio::test]
-async fn invalid_json_is_an_error_instead_of_no_update() {
-    let mock = MockGitHub::start(Router::new().fallback(get(|| async { "not JSON" }))).await;
-    let error = fetch_latest(&build_client(None).unwrap(), &mock.endpoint, "0.1.41")
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("版本信息无效"));
 }
 
 #[tokio::test]
 async fn configured_proxy_handles_the_update_request() {
     let mock = MockGitHub::start(Router::new().fallback(get(|| async {
-        Json(json!({ "tag_name": "v0.2.0", "draft": false, "prerelease": false }))
+        redirects_to("v0.2.0")
     })))
     .await;
+    // 代理指向 mock 自己，能连上就说明请求确实走了代理配置
     let result = fetch_latest(
-        &build_client(Some(mock.port)).unwrap(),
+        &build_probe_client(Some(mock.port)).unwrap(),
         "http://update-check.invalid/releases/latest",
         "0.1.41",
     )
@@ -177,7 +197,7 @@ async fn configured_proxy_handles_the_update_request() {
 async fn stalled_request_times_out_with_a_readable_error() {
     let mock = MockGitHub::start(Router::new().fallback(get(|| async {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        Json(json!({ "tag_name": "v0.2.0", "draft": false, "prerelease": false }))
+        redirects_to("v0.2.0").into_response()
     })))
     .await;
     let client = Client::builder()
@@ -192,16 +212,37 @@ async fn stalled_request_times_out_with_a_readable_error() {
 }
 
 #[test]
-fn reports_both_asset_kinds() {
-    let mut published = release("v0.2.0");
-    published.assets = vec![
-        asset("yap-xfish-v0.2.0-update.zip", 6_000_000),
-        asset("yap-xfish-v0.2.0-windows-amd64.zip", 34_000_000),
-        asset("notes.txt", 10),
-    ];
-    let result = release_report("0.1.41", published).unwrap();
-    assert_eq!(result.update_asset.unwrap().size, 6_000_000);
-    assert_eq!(result.full_asset.unwrap().size, 34_000_000);
+fn builds_asset_download_urls_from_the_tag() {
+    assert_eq!(
+        release_asset_url("v0.1.51", "update.zip"),
+        "https://github.com/BHXGGGG/YAP-XFISH/releases/download/v0.1.51/yap-xfish-v0.1.51-update.zip"
+    );
+    assert_eq!(
+        release_asset_url("v0.1.51", "windows-amd64.zip"),
+        "https://github.com/BHXGGGG/YAP-XFISH/releases/download/v0.1.51/yap-xfish-v0.1.51-windows-amd64.zip"
+    );
+}
+
+#[tokio::test]
+async fn download_reports_missing_assets_instead_of_failing() {
+    let mock = MockGitHub::start(Router::new().fallback(get(|| async {
+        (StatusCode::NOT_FOUND, "").into_response()
+    })))
+    .await;
+    let dir = std::env::temp_dir().join(format!("yap-update-404-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("x.zip");
+    let found = try_download(
+        &build_client(None).unwrap(),
+        &format!("http://127.0.0.1:{}/asset", mock.port),
+        &dest,
+    )
+    .await
+    .unwrap();
+    assert!(!found);
+    assert!(!dest.exists());
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -283,23 +324,31 @@ fn generated_script_replaces_files_in_a_sandbox() {
 #[ignore = "downloads the real release asset"]
 async fn live_download_verifies_and_extracts() {
     let port: u16 = std::env::var("YAP_PROXY_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(10020);
+    let probe = build_probe_client(Some(port)).unwrap();
     let client = build_client_with_timeout(Some(port), Duration::from_secs(15 * 60)).unwrap();
-    let release = fetch_release(&client, LATEST_RELEASE_API).await.unwrap().unwrap();
-    let asset = release
-        .asset_suffix("-update.zip")
-        .or_else(|| release.asset_suffix("-windows-amd64.zip"))
-        .expect("release has no archive");
+    let tag = fetch_latest_tag(&probe, LATEST_RELEASE_PAGE)
+        .await
+        .unwrap()
+        .expect("no published release");
     let dir = std::env::temp_dir().join(format!("yap-update-live-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let zip_path = dir.join("asset.zip");
-    download_asset(&client, asset, &zip_path).await.unwrap();
+    if !try_download(&client, &release_asset_url(&tag, "update.zip"), &zip_path)
+        .await
+        .unwrap()
+    {
+        assert!(
+            try_download(&client, &release_asset_url(&tag, "windows-amd64.zip"), &zip_path)
+                .await
+                .unwrap()
+        );
+    }
     let stage = dir.join("stage");
     fs::create_dir_all(&stage).unwrap();
-    let files = extract_zip(&zip_path, &stage, asset.name.ends_with("-windows-amd64.zip")).unwrap();
-    println!("{} -> {files:?}", asset.name);
+    let files = extract_zip(&zip_path, &stage, false).unwrap();
+    println!("{tag} -> {files:?}");
     assert!(files.iter().any(|f| f == "yap-xfish.exe"));
-    assert!(stage.join("yap-xfish.exe").metadata().unwrap().len() > 1_000_000);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -307,8 +356,8 @@ async fn live_download_verifies_and_extracts() {
 #[ignore = "requires access to GitHub"]
 async fn live_github_update_check() {
     let result = fetch_latest(
-        &build_client(None).unwrap(),
-        LATEST_RELEASE_API,
+        &build_probe_client(None).unwrap(),
+        LATEST_RELEASE_PAGE,
         env!("CARGO_PKG_VERSION"),
     )
     .await

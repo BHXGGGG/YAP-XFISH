@@ -96,13 +96,15 @@ function fmtSize(n: number): string {
   return n + ' B'
 }
 
+// 为了不消耗 GitHub API 配额，版本检查只读发布页跳转，拿不到资产体积（size 为 0），
+// 所以「立即更新」按钮只要求有新版本，体积已知时才显示大小。
 const autoUpdateSize = computed(() => {
   const r = updateResult.value
   if (!r || r.status !== 'update_available') return 0
   return r.update_asset?.size || r.full_asset?.size || 0
 })
 const canAutoUpdate = computed(() =>
-  !!updateResult.value && updateResult.value.status === 'update_available' && autoUpdateSize.value > 0,
+  !!updateResult.value && updateResult.value.status === 'update_available',
 )
 const updatePct = computed(() => {
   const p = updateProgress.value
@@ -231,7 +233,7 @@ function onElevateCancel() {
       ><i :style="{ width: updatePct + '%' }"></i></span>
       <button v-if="updating" class="update-btn" disabled>更新中…</button>
       <button v-else-if="canAutoUpdate" class="update-btn" @click="startUpdate">
-        立即更新（{{ fmtSize(autoUpdateSize) }}）
+        立即更新<span v-if="autoUpdateSize">（{{ fmtSize(autoUpdateSize) }}）</span>
       </button>
       <a
         v-if="!updating && !checkingUpdate && (updateResult?.status === 'update_available' || updateResult?.status === 'no_release' || updateError)"
