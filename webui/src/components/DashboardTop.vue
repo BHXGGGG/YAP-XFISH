@@ -94,26 +94,49 @@ async function loadInfo() {
 const exit = ref<ExitIp | null>(null)
 const exitState = ref<'idle' | 'loading' | 'error'>('idle')
 
+/** 节点偶尔会慢到超过查询超时，失败后按这个间隔自动重试，全部失败才停手 */
+const EXIT_RETRY_DELAYS = [8_000, 20_000]
+let exitAttempts = 0
+let exitTimer: number | null = null
+
+function clearExitRetry() {
+  if (exitTimer) {
+    window.clearTimeout(exitTimer)
+    exitTimer = null
+  }
+}
+
 async function loadExit(force = false) {
   if (!running.value) {
+    clearExitRetry()
+    exitAttempts = 0
     exit.value = null
     exitState.value = 'idle'
     return
   }
+  clearExitRetry()
   exitState.value = 'loading'
   try {
     const v: any = await api.exitIp(force)
     if (v && typeof v === 'object' && typeof v.ip === 'string') {
       exit.value = v
       exitState.value = 'idle'
-    } else {
-      exit.value = null
-      exitState.value = 'error'
+      exitAttempts = 0
+      return
     }
+    throw new Error('empty response')
   } catch {
     exit.value = null
     exitState.value = 'error'
+    scheduleExitRetry()
   }
+}
+
+function scheduleExitRetry() {
+  const delay = EXIT_RETRY_DELAYS[exitAttempts]
+  if (delay === undefined || !running.value) return
+  exitAttempts++
+  exitTimer = window.setTimeout(() => { void loadExit() }, delay)
 }
 
 const ipText = computed(() => {
@@ -128,11 +151,11 @@ const ipClass = computed(() => ({
 }))
 
 /** 只在节点 / 模式 / 运行状态变化时重新查询；后端按（节点, 模式）缓存 5 分钟 */
-let exitTimer: number | null = null
 watch(
   () => [store.status.running, store.profile.selected_node, store.profile.mode] as const,
   () => {
-    if (exitTimer) window.clearTimeout(exitTimer)
+    clearExitRetry()
+    exitAttempts = 0
     exitTimer = window.setTimeout(() => { void loadExit() }, 300)
   },
 )
@@ -324,10 +347,9 @@ onBeforeUnmount(() => {
   if (infoTimer) window.clearInterval(infoTimer)
   if (serviceTimer) window.clearInterval(serviceTimer)
   if (tickTimer) window.clearInterval(tickTimer)
-  if (exitTimer) window.clearTimeout(exitTimer)
+  clearExitRetry()
   if (rateWatchStop) { rateWatchStop(); rateWatchStop = null }
   infoTimer = serviceTimer = tickTimer = null
-  exitTimer = null
 })
 </script>
 

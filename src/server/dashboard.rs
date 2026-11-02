@@ -93,10 +93,11 @@ pub async fn exit_ip(
             }
         }
     }
-    let client = proxy_client(port, Duration::from_secs(8))?;
-    let (ip, country) = lookup_exit(&client)
-        .await
-        .ok_or_else(|| AppError(anyhow::anyhow!("出口 IP 查询失败（当前节点可能不可用）")))?;
+    let client = proxy_client(port, Duration::from_secs(10))?;
+    let Some((ip, country)) = lookup_exit(&client).await else {
+        state.log_with("app", "warn", "出口 IP 查询失败：节点未在超时内响应");
+        return Err(AppError(anyhow::anyhow!("出口 IP 查询失败（当前节点可能不可用）")));
+    };
 
     let mut out = ExitIp { ip: ip.clone(), country, ..Default::default() };
     if let Some(qv) = quality_for(&client, &ip, q.refresh).await {
@@ -119,15 +120,26 @@ fn proxy_client(port: u16, timeout: Duration) -> AppResult<reqwest::Client> {
         .map_err(|e| AppError(anyhow::anyhow!(e)))
 }
 
-/// Cloudflare trace（纯文本 ip= / loc=），失败再试 ipinfo.io。
+/// 两个来源并发查询，任一成功即用，避免前一个占满超时后另一个没时间。
 async fn lookup_exit(client: &reqwest::Client) -> Option<(String, Option<String>)> {
-    if let Ok(r) = client.get("https://www.cloudflare.com/cdn-cgi/trace").send().await {
-        if let Ok(body) = r.text().await {
-            if let Some(v) = parse_trace(&body) {
-                return Some(v);
-            }
-        }
-    }
+    let (trace, ipinfo) = tokio::join!(from_cloudflare(client), from_ipinfo(client));
+    // Cloudflare trace 还给出国家代码，优先用它
+    trace.or(ipinfo)
+}
+
+async fn from_cloudflare(client: &reqwest::Client) -> Option<(String, Option<String>)> {
+    let body = client
+        .get("https://www.cloudflare.com/cdn-cgi/trace")
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    parse_trace(&body)
+}
+
+async fn from_ipinfo(client: &reqwest::Client) -> Option<(String, Option<String>)> {
     let j: serde_json::Value = client.get("https://ipinfo.io/json").send().await.ok()?.json().await.ok()?;
     let ip = j.get("ip")?.as_str()?.to_string();
     Some((ip, j.get("country").and_then(|c| c.as_str()).map(String::from)))
