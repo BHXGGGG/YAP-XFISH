@@ -1,13 +1,13 @@
-//! 进程内累计流量 + 瞬时速率：轮询 Clash `GET /connections` 的 totals，按增量累加。
+//! 进程内累计流量 + 瞬时速率：每秒轮询 Clash `GET /connections`，**只统计走代理的连接**。
 //!
 //! - `/traffic` 在 sing-box 上是 NDJSON 流，不适合一次性 JSON 解析。
-//! - `/connections` 的 uploadTotal/downloadTotal 在 **每次启动 sing-box 后从 0 计**。
+//! - 按连接 id 记住上次累计字节，出口为 direct / block 的连接不计入（见 `traffic.rs`）。
 //! - 本 poller 用「相对上次采样的增量」写入累计，并在 INTERVAL=1s 时把增量当作 B/s。
 //! - **start/stop/restart 均不清零累计**；停止时速率置 0。
 //! - 连接明细不在此轮询：仅管理页打开时由 `GET /api/connections` 按需拉取。
 
 use crate::app::{AppEvent, AppState};
-use crate::core::traffic::TrafficTotals;
+use crate::core::traffic::{ConnectionsSnapshot, ProxyTrafficCounter};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,8 +25,8 @@ pub fn start(state: Arc<AppState>) {
             Err(_) => return,
         };
 
-        let mut last_core_up: Option<u64> = None;
-        let mut last_core_down: Option<u64> = None;
+        // 只统计走代理的连接；直连流量不计入速度和累计
+        let mut counter = ProxyTrafficCounter::default();
         let mut was_running = false;
         // 核心进程连续多少拍不在了；reload/TUN 回退期间会短暂没有子进程，3 拍（约 3s）才判定意外退出。
         let mut dead_ticks: u32 = 0;
@@ -39,8 +39,7 @@ pub fn start(state: Arc<AppState>) {
             ticker.tick().await;
             let running = state.status.read().await.running;
             if !running {
-                last_core_up = None;
-                last_core_down = None;
+                counter.reset();
                 if was_running {
                     // 停止瞬间：速率归零，累计保留；只在边沿 emit，避免空转刷 WS
                     {
@@ -82,14 +81,10 @@ pub fn start(state: Arc<AppState>) {
                 let cfg = state.config.read().await;
                 (cfg.clash_api_port, cfg.api_secret.clone())
             };
-            let Some(tot) = fetch_totals(&client, port, &secret).await else {
+            let Some(snap) = fetch_connections(&client, port, &secret).await else {
                 continue;
             };
-
-            let du = delta(last_core_up, tot.up);
-            let dd = delta(last_core_down, tot.down);
-            last_core_up = Some(tot.up);
-            last_core_down = Some(tot.down);
+            let (du, dd) = counter.tick(&snap);
 
             let (up, down) = {
                 let mut st = state.status.write().await;
@@ -164,19 +159,11 @@ async fn on_core_crashed(state: &AppState) {
     }
 }
 
-fn delta(last: Option<u64>, now: u64) -> u64 {
-    match last {
-        None => now,
-        Some(prev) if now >= prev => now - prev,
-        Some(_) => now,
-    }
-}
-
-async fn fetch_totals(
+async fn fetch_connections(
     client: &reqwest::Client,
     port: u16,
     secret: &str,
-) -> Option<TrafficTotals> {
+) -> Option<ConnectionsSnapshot> {
     let url = format!("http://127.0.0.1:{port}/connections");
     let mut req = client.get(&url);
     if !secret.is_empty() {
@@ -186,5 +173,5 @@ async fn fetch_totals(
     if !resp.status().is_success() {
         return None;
     }
-    resp.json::<TrafficTotals>().await.ok()
+    resp.json::<ConnectionsSnapshot>().await.ok()
 }

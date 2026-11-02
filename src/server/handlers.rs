@@ -643,12 +643,20 @@ pub async fn add_rule(
     Json(req): Json<AddRuleReq>,
 ) -> AppResult<Json<RouteRule>> {
     let r#type = req.r#type.trim().to_string();
-    let payload = req.payload.trim().to_string();
+    let mut payload = req.payload.trim().to_string();
     let outbound = req.outbound.trim().to_string();
     if r#type.is_empty() || payload.is_empty() || outbound.is_empty() {
         return Err(AppError(anyhow::anyhow!(
             "规则类型 / 匹配内容 / 出站不能为空"
         )));
+    }
+    // IP 规则：去掉端口、补前缀长度，保存规范形式；非法地址直接给出明确提示
+    if matches!(r#type.to_ascii_lowercase().as_str(), "ip_cidr" | "ip") {
+        payload = crate::config::render::normalize_ip_cidr(&payload).ok_or_else(|| {
+            AppError(anyhow::anyhow!(
+                "无效的 IP / CIDR：{payload}。请填 1.2.3.4、1.2.3.0/24 或 IPv6 地址；端口请另建「端口」规则。"
+            ))
+        })?;
     }
     // 预检：能否渲染为合法 sing-box 规则（避免写入后核心 FATAL 全站挂掉）
     let probe = crate::config::model::RouteRule {

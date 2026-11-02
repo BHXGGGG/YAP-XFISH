@@ -56,7 +56,6 @@ const intervals: [string, string][] = [
   ['every6_hours', '6 小时'],
   ['every12_hours', '12 小时'],
   ['daily', '每天'],
-  ['cron', '自定义 Cron'],
 ]
 const intervalLabel = (k: string) => intervals.find(([x]) => x === k)?.[1] ?? k
 
@@ -72,7 +71,7 @@ const subs = computed<any[]>(() => store.subscriptions || [])
 const enabledCount = computed(() => subs.value.filter((s) => s.enabled).length)
 const nodeTotal = computed(() => subs.value.reduce((n, s) => n + (Number(s.node_count) || 0), 0))
 
-// 周期 → 毫秒。manual / cron 没有固定间隔，不参与「下次自动更新」。
+// 周期 → 毫秒。manual（以及旧配置里的 cron）没有固定间隔，不参与「下次自动更新」。
 const INTERVAL_MS: Record<string, number> = {
   every30_min: 30 * 60e3,
   hourly: 3600e3,
@@ -341,7 +340,7 @@ load()
             aria-label="自动更新周期"
             @change="setIntervalOf(s, ($event.target as HTMLSelectElement).value)"
           >
-            <option v-for="[k, l] in intervals.filter(([k]) => k !== 'cron')" :key="k" :value="k">周期 {{ l }}</option>
+            <option v-for="[k, l] in intervals" :key="k" :value="k">周期 {{ l }}</option>
           </select>
           <button @click="toggleEnabled(s)">{{ s.enabled ? '停用' : '启用' }}</button>
           <template v-if="renamingId === s.id">

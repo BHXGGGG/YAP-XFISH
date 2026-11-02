@@ -387,20 +387,23 @@ fn normalize_host(raw: &str) -> Option<String> {
     Some(s)
 }
 
-fn normalize_ip_cidr(raw: &str) -> Option<String> {
+/// 规范化 IP / CIDR：单 IP 补 /32 或 /128；带端口（`1.2.3.4:3478`、`[::1]:443`）时去掉端口。
+/// 无法解析返回 None（渲染时跳过），避免把非法值写进配置导致 sing-box FATAL。
+pub fn normalize_ip_cidr(raw: &str) -> Option<String> {
+    use std::net::{IpAddr, SocketAddr};
     let s = raw.trim();
-    if s.is_empty() {
-        return None;
+    if let Some((addr, prefix)) = s.split_once('/') {
+        let ip: IpAddr = addr.trim().parse().ok()?;
+        let prefix: u8 = prefix.trim().parse().ok()?;
+        let max = if ip.is_ipv4() { 32 } else { 128 };
+        return (prefix <= max).then(|| format!("{ip}/{prefix}"));
     }
-    if s.contains('/') {
-        return Some(s.to_string());
-    }
-    if s.contains(':') {
-        // IPv6 bare
-        Some(format!("{s}/128"))
-    } else {
-        Some(format!("{s}/32"))
-    }
+    let ip: IpAddr = s
+        .parse()
+        .ok()
+        .or_else(|| s.parse::<SocketAddr>().ok().map(|a| a.ip()))
+        .or_else(|| s.strip_prefix('[')?.strip_suffix(']')?.parse().ok())?;
+    Some(format!("{ip}/{}", if ip.is_ipv4() { 32 } else { 128 }))
 }
 
 fn parse_ports(raw: &str) -> Option<Vec<u16>> {
@@ -762,6 +765,21 @@ fn apply_transport(v: &mut Value, node: &Node) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_ip_cidr() {
+        let n = |s: &str| normalize_ip_cidr(s);
+        assert_eq!(n("162.159.207.0").as_deref(), Some("162.159.207.0/32"));
+        assert_eq!(n("162.159.207.0:3478").as_deref(), Some("162.159.207.0/32"));
+        assert_eq!(n(" 162.159.207.0/24 ").as_deref(), Some("162.159.207.0/24"));
+        assert_eq!(n("2606:4700::1").as_deref(), Some("2606:4700::1/128"));
+        assert_eq!(n("[2606:4700::1]:443").as_deref(), Some("2606:4700::1/128"));
+        assert_eq!(n("[2606:4700::1]").as_deref(), Some("2606:4700::1/128"));
+        assert_eq!(n("2606:4700::/32").as_deref(), Some("2606:4700::/32"));
+        assert_eq!(n("1.2.3.4/33"), None);
+        assert_eq!(n("example.com"), None);
+        assert_eq!(n(""), None);
+    }
 
     #[test]
     fn proxy_rule_follows_selected_node() {

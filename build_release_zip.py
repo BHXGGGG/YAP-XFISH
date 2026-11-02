@@ -9,21 +9,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REL = ROOT / "release"
 WEBUI = ROOT / "webui"
-FILES = ["yap-xfish.exe", "sing-box.exe", "README.txt"]
+FILES = ["yap-xfish.exe", "sing-box.exe", "libcronet.dll", "README.txt"]
 VERSION_RE = re.compile(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"\s*$', re.MULTILINE)
 
 
-def bump_patch_version() -> tuple[str, str, str]:
-    """Return the current version, next patch version, and updated Cargo.toml text."""
-    cargo = ROOT / "Cargo.toml"
-    text = cargo.read_text(encoding="utf-8")
+def read_version() -> str:
+    """Read the package version from Cargo.toml (bump it there before running)."""
+    text = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
     match = VERSION_RE.search(text)
     if not match:
         raise RuntimeError("Cargo.toml 中找不到 package version")
-    old_version = ".".join(match.groups())
-    major, minor, patch = map(int, match.groups())
-    version = f"{major}.{minor}.{patch + 1}"
-    return old_version, version, text[:match.start(1)] + version + text[match.end(3):]
+    return ".".join(match.groups())
 
 
 def run(command: list[str], cwd: Path) -> None:
@@ -32,14 +28,12 @@ def run(command: list[str], cwd: Path) -> None:
 
 
 def main() -> None:
-    old_version, version, updated_cargo = bump_patch_version()
-    cargo = ROOT / "Cargo.toml"
+    version = read_version()
     readme = REL / "README.txt"
     original_readme = readme.read_text(encoding="utf-8")
     updated_readme = re.sub(r"YAP-XFISH v\d+\.\d+\.\d+", f"YAP-XFISH v{version}", original_readme)
-    cargo.write_text(updated_cargo, encoding="utf-8")
     readme.write_text(updated_readme, encoding="utf-8")
-    print(f"版本已递增至 v{version}")
+    print(f"打包版本 v{version}")
 
     try:
         npm = "npm.cmd" if sys.platform == "win32" else "npm"
@@ -66,7 +60,6 @@ def main() -> None:
                 raise RuntimeError(f"压缩包校验失败: {bad_file}")
         print(f"已打包: {zip_path} ({zip_path.stat().st_size} bytes) @ {datetime.now():%H:%M:%S}")
     except Exception:
-        cargo.write_text(updated_cargo.replace(f'version = "{version}"', f'version = "{old_version}"', 1), encoding="utf-8")
         readme.write_text(original_readme, encoding="utf-8")
         raise
 

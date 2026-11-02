@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
 import { markTesting, clearTesting } from '../latency'
 import Modal from '../components/Modal.vue'
 import AddSubscriptionForm from '../components/AddSubscriptionForm.vue'
-
-const modes: [string, string][] = [['global', '全局'], ['rule', '规则'], ['direct', '直连']]
+import DashboardTop from '../components/DashboardTop.vue'
 
 const PROTOCOL_META: Record<string, { label: string; color: string }> = {
   shadowsocks: { label: 'SS',     color: '#0ea5e9' },
@@ -27,66 +26,6 @@ const PROTOCOL_META: Record<string, { label: string; color: string }> = {
 function protocolMeta(kind: string) {
   return PROTOCOL_META[kind] || { label: kind || '?', color: '#64748b' }
 }
-
-function fmtBytes(n: number): string {
-  if (!n || n < 0) return '0 B'
-  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
-  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(2) + ' MB'
-  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
-  return n + ' B'
-}
-
-function fmtRate(bps: number): string {
-  if (!bps || bps < 0) return '0 B/s'
-  if (bps >= 1024 * 1024) return (bps / 1024 / 1024).toFixed(2) + ' MB/s'
-  if (bps >= 1024) return (bps / 1024).toFixed(1) + ' KB/s'
-  return Math.round(bps) + ' B/s'
-}
-
-/* ---------- 速度迷你图（纯前端；组件卸载即停，关管理页不占后端） ---------- */
-const RATE_HIST = 48
-const rateUpHist = ref<number[]>(Array(RATE_HIST).fill(0))
-const rateDownHist = ref<number[]>(Array(RATE_HIST).fill(0))
-let rateWatchStop: (() => void) | null = null
-
-function pushRate(up: number, down: number) {
-  const u = rateUpHist.value.slice(1)
-  u.push(up || 0)
-  rateUpHist.value = u
-  const d = rateDownHist.value.slice(1)
-  d.push(down || 0)
-  rateDownHist.value = d
-}
-
-const rateChartUp = computed(() => sparkPath(rateUpHist.value))
-const rateChartDown = computed(() => sparkPath(rateDownHist.value))
-
-function sparkPath(arr: number[]): string {
-  const w = 240
-  const h = 40
-  const max = Math.max(1, ...arr)
-  return arr
-    .map((v, i) => {
-      const x = (i / Math.max(1, arr.length - 1)) * w
-      const y = h - (v / max) * (h - 2) - 1
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-}
-
-onMounted(() => {
-  // 仅仪表盘挂载时跟踪速率历史（离开仪表盘卸载则停止）
-  rateWatchStop = watch(
-    () => [store.status.up_rate, store.status.down_rate] as const,
-    ([u, d]) => pushRate(Number(u) || 0, Number(d) || 0),
-  )
-})
-onBeforeUnmount(() => {
-  if (rateWatchStop) {
-    rateWatchStop()
-    rateWatchStop = null
-  }
-})
 
 const visibleNodes = computed(() => {
   const enabled = new Set(
@@ -187,9 +126,6 @@ async function sel(id: string) {
   if (id === store.profile.selected_node) return
   try { await api.selectNode(id); toast('已选择节点') } catch (e: any) { toast(e.message) }
 }
-async function setMode(m: string) {
-  try { await api.setMode(m); toast('已切换模式') } catch (e: any) { toast(e.message) }
-}
 async function testAll() {
   // 在 tab 上下文里："测试全部延迟" 实际指「当前 tab 全部节点」。
   // tab = 全部 时 = 全订阅节点；切到具体订阅时 = 仅该订阅。
@@ -215,21 +151,6 @@ async function testOne(id: string, ev?: Event) {
 }
 
 const emit = defineEmits<{ (e: 'navigate', tab: string): void }>()
-
-async function start()   { try { await api.coreStart()   } catch (e: any) { toast(e.message) } }
-async function stop()    { try { await api.coreStop()    } catch (e: any) { toast(e.message) } }
-async function restart() { try { await api.coreRestart() } catch (e: any) { toast(e.message) } }
-
-const sysproxyOn = computed(() => !!(store.config.system_proxy || store.status.system_proxy))
-const tunOn      = computed(() => !!(store.config.enable_tun || store.status.enable_tun))
-const statusLabel = computed(() => {
-  const parts: string[] = []
-  parts.push(store.status.running ? '运行中' : '已停止')
-  if (sysproxyOn.value) parts.push('系统代理')
-  if (tunOn.value)      parts.push('TUN')
-  return parts.join(' · ')
-})
-const statusKind = computed(() => (store.status.running ? 'on' : 'off'))
 
 async function toggleConfigFlag(key: 'system_proxy' | 'enable_tun', value: boolean) {
   // TUN 开启且未提权 → 弹提权引导弹窗
@@ -261,14 +182,6 @@ async function toggleConfigFlag(key: 'system_proxy' | 'enable_tun', value: boole
     }
   } catch (e: any) { toast(e.message) }
 }
-
-const currentNodeLabel = computed(() => {
-  const id = store.status.current_node || store.profile.selected_node
-  if (!id) return '—'
-  if (store.status.current_node_name) return store.status.current_node_name
-  const n = store.profile.nodes.find((x: any) => x.id === id)
-  return n?.name || id
-})
 
 /* ---------- TUN 提权引导 ---------- */
 const showElevateDialog = ref(false)
@@ -326,58 +239,10 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
   <section>
     <h2>仪表盘</h2>
 
-    <div class="cards">
-      <div class="card status-card">
-        <div class="k">代理状态</div>
-        <div class="v">
-          <span class="badge" :class="statusKind">{{ statusLabel }}</span>
-        </div>
-        <div class="status-toggles">
-          <label class="status-toggle" :class="{ on: sysproxyOn }">
-            <input type="checkbox" :checked="sysproxyOn" @change="toggleConfigFlag('system_proxy', ($event.target as HTMLInputElement).checked)" />
-            <span>系统代理</span>
-            <em>{{ sysproxyOn ? '开' : '关' }}</em>
-          </label>
-          <label class="status-toggle" :class="{ on: tunOn }">
-            <input type="checkbox" :checked="tunOn" @change="toggleConfigFlag('enable_tun', ($event.target as HTMLInputElement).checked)" />
-            <span>TUN 模式</span>
-            <em>{{ tunOn ? '开' : '关' }}</em>
-          </label>
-        </div>
-      </div>
-      <div class="card mode-card">
-        <div class="k">模式</div>
-        <div class="v mode-row">
-          <button v-for="[k, l] in modes" :key="k"
-                  class="mode-btn"
-                  :class="{ active: store.profile.mode === k }"
-                  @click="setMode(k)">{{ l }}</button>
-        </div>
-      </div>
-      <div class="card"><div class="k">当前节点</div><div class="v node-name">{{ currentNodeLabel }}</div></div>
-      <div class="card"><div class="k">节点数</div><div class="v">{{ store.status.node_count }}</div></div>
-      <div class="card"><div class="k">上行</div><div class="v">{{ fmtBytes(store.status.traffic_up) }}</div></div>
-      <div class="card"><div class="k">下行</div><div class="v">{{ fmtBytes(store.status.traffic_down) }}</div></div>
-      <div class="card"><div class="k">总计</div><div class="v">{{ fmtBytes((store.status.traffic_up || 0) + (store.status.traffic_down || 0)) }}</div></div>
-      <div class="card rate-card">
-        <div class="k">实时速度</div>
-        <div class="v rate-line">
-          <span class="up">↑ {{ fmtRate(store.status.up_rate) }}</span>
-          <span class="down">↓ {{ fmtRate(store.status.down_rate) }}</span>
-        </div>
-        <svg class="rate-spark" viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true">
-          <path :d="rateChartUp" stroke="#16a34a" stroke-width="1.5" fill="none" />
-          <path :d="rateChartDown" stroke="#2563eb" stroke-width="1.5" fill="none" />
-        </svg>
-      </div>
-    </div>
-
-    <div class="actions">
-      <button class="primary" :disabled="store.status.running" @click="start">启动代理</button>
-      <button :disabled="!store.status.running" @click="stop">停止</button>
-      <button @click="restart">重启</button>
-    </div>
-
+    <DashboardTop
+      @toggle="toggleConfigFlag"
+      @navigate="(tab: string) => emit('navigate', tab)"
+    />
 
     <!-- 节点区：标题 + 搜索框 + 两按钮 同一行 -->
     <div class="section-head">
@@ -481,65 +346,6 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 </template>
 
 <style scoped>
-.cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
-.cards > .status-card { grid-column: span 2; }
-.cards > .mode-card   { grid-column: span 2; }
-@media (max-width: 1280px) {
-  .cards { grid-template-columns: repeat(3, 1fr); }
-  .cards > .status-card, .cards > .mode-card { grid-column: span 1; }
-}
-
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
-.k { font-size: 12px; color: #6b7280; }
-.v { font-size: 18px; font-weight: 600; margin-top: 4px; }
-.v.node-name { font-size: 14px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
-.badge.on  { background: #dcfce7; color: #166534; }
-.badge.off { background: #fee2e2; color: #991b1b; }
-
-.mode-row { display: flex; flex-wrap: wrap; gap: 6px; font-size: 14px; }
-.mode-btn {
-  padding: 3px 10px; font-size: 13px;
-  border: 1px solid var(--border); border-radius: 6px; background: #fff; cursor: pointer;
-}
-.mode-btn:hover  { background: #eff6ff; border-color: #93c5fd; }
-.mode-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-
-.status-toggles {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}
-.status-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #fff;
-  cursor: pointer;
-  user-select: none;
-  font-size: 12px;
-  color: #374151;
-  transition: background .15s, border-color .15s;
-}
-.status-toggle input { width: 14px; height: 14px; }
-.status-toggle em {
-  font-style: normal;
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: #fee2e2;
-  color: #991b1b;
-}
-.status-toggle.on { background: #ecfdf5; border-color: #86efac; color: #166534; }
-.status-toggle.on em { background: #dcfce7; color: #166534; }
-
-.actions { display: flex; gap: 8px; margin: 12px 0 18px; }
-
 .section-head {
   display: flex; align-items: center;
   margin: 8px 0 8px; gap: 8px; flex-wrap: wrap;
@@ -671,14 +477,4 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
   border-radius: 8px; font-weight: 600;
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
 }
-
-/* 实时速度卡：双线 + 迷你图 */
-.rate-card { grid-column: span 2; min-width: 0; }
-.rate-line { display: flex; gap: 14px; font-weight: 600; }
-.rate-line .up   { color: #16a34a; }
-.rate-line .down { color: #2563eb; }
-.rate-spark { width: 100%; height: 40px; margin-top: 6px; display: block; }
-@media (max-width: 900px) { .rate-card { grid-column: span 1; } }
-
-.actions button.active { background: #1f2937; color: #fff; border-color: #1f2937; }
 </style>

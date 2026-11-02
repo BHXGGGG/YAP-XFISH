@@ -31,6 +31,31 @@ export interface UpdateCheckResult {
   release_url: string
 }
 
+/** 仪表盘运行信息：核心运行时长、内网 IP、代理端口、内存占用（字节）。 */
+export interface DashboardInfo {
+  uptime_secs: number | null
+  lan_ip: string | null
+  proxy_port: number
+  app_mem: number
+  core_mem: number
+}
+
+/** 出口 IP 与 IP 质量（判定规则与 FlClash 一致）。 */
+export interface ExitIp {
+  ip: string
+  country: string | null
+  org: string | null
+  ip_type: 'residential' | 'mobile' | 'business' | 'hosting' | null
+  quality: 'good' | 'normal' | 'risky' | null
+  /** 类型只是「未标记为机房 / 移动」推断出来的，可信度较低 */
+  inferred: boolean
+}
+
+export interface ServiceStatus {
+  name: string
+  ms: number | null
+}
+
 export const api = {
   status: () => req('GET', '/api/status'),
   config: () => req('GET', '/api/config'),
@@ -66,4 +91,11 @@ export const api = {
   closeAllConnections: () => req('DELETE', '/api/connections'),
   /** 30 天每日流量（侧栏统计用） */
   trafficDaily: () => req('GET', '/api/traffic/daily'),
+  /** 仪表盘：运行时长 / 内网 IP / 内存（轻量，可轮询） */
+  dashboardInfo: (): Promise<DashboardInfo> => req('GET', '/api/dashboard/info'),
+  /** 仪表盘：出口 IP + 质量（经本机代理查询，较慢；后端有缓存） */
+  exitIp: (refresh = false): Promise<ExitIp | null> =>
+    req('GET', '/api/dashboard/exit-ip' + (refresh ? '?refresh=true' : '')),
+  /** 仪表盘：经代理访问 Google / GitHub 的延迟 */
+  dashboardServices: (): Promise<ServiceStatus[]> => req('GET', '/api/dashboard/services'),
 }

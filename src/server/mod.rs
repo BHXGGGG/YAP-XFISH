@@ -1,3 +1,4 @@
+mod dashboard;
 pub mod handlers;
 pub mod static_files;
 mod updates;
@@ -79,6 +80,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/config", axum::routing::put(handlers::update_config))
         .route("/api/admin/elevate", post(handlers::admin_elevate))
         .route("/api/debug/memory", get(handlers::mem_debug))
+        .route("/api/dashboard/info", get(dashboard::info))
+        .route("/api/dashboard/exit-ip", get(dashboard::exit_ip))
+        .route("/api/dashboard/services", get(dashboard::services))
         .route("/api/connections", get(handlers::list_connections).delete(handlers::close_all_connections))
         .route("/api/connections/:id", delete(handlers::close_connection))
         .route("/api/version", get(handlers::get_version))

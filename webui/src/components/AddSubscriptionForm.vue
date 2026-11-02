@@ -46,7 +46,6 @@ const intervals: [string, string][] = [
   ['every6_hours', '6 小时'],
   ['every12_hours', '12 小时'],
   ['daily', '每天'],
-  ['cron', '自定义 Cron'],
 ]
 
 function reset() {

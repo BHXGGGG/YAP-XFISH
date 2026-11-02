@@ -26,6 +26,8 @@ struct CoreInner {
     event_tx: tokio::sync::broadcast::Sender<AppEvent>,
     /// 最近一条 FATAL/panic 输出（已去 ANSI），核心意外退出时用来判断原因。
     last_fatal: Arc<std::sync::Mutex<Option<String>>>,
+    /// 当前核心进程的启动时刻（仪表盘「运行时长」）；停止时清空。
+    started_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 struct ProbeConfig {
@@ -112,6 +114,7 @@ impl CoreManager {
                 probe_config: Mutex::new(None),
                 event_tx,
                 last_fatal: Arc::new(std::sync::Mutex::new(None)),
+                started_at: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -348,6 +351,7 @@ impl CoreManager {
 
     pub async fn stop(&self) -> AppResult<()> {
         *self.inner.probe_config.lock().await = None;
+        *self.inner.started_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut guard = self.inner.child.lock().await;
         if let Some(mut child) = guard.take() {
             let _ = child.start_kill();
@@ -447,9 +451,20 @@ impl CoreManager {
         }
     }
 
+    /// 核心已运行时长与进程 id；未运行返回 None。
+    pub async fn uptime_and_pid(&self) -> Option<(std::time::Duration, Option<u32>)> {
+        if !self.is_running().await {
+            return None;
+        }
+        let started = (*self.inner.started_at.lock().unwrap_or_else(|e| e.into_inner()))?;
+        let pid = self.inner.child.lock().await.as_ref().and_then(|c| c.id());
+        Some((started.elapsed(), pid))
+    }
+
     /// 拉起核心并捕获其 stdout/stderr 转发为日志事件（网页日志面板可见）。
     async fn spawn_captured(&self, binary: &Path) -> AppResult<tokio::process::Child> {
         *self.inner.last_fatal.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.inner.started_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
         let mut child = process::spawn(binary, &self.inner.config_path).await?;
         if let Some(out) = child.stdout.take() {
             spawn_log_reader(out, self.inner.event_tx.clone(), self.inner.last_fatal.clone());
