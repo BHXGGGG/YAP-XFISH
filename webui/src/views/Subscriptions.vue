@@ -71,7 +71,7 @@ const subs = computed<any[]>(() => store.subscriptions || [])
 const enabledCount = computed(() => subs.value.filter((s) => s.enabled).length)
 const nodeTotal = computed(() => subs.value.reduce((n, s) => n + (Number(s.node_count) || 0), 0))
 
-// 周期 → 毫秒。manual（以及旧配置里的 cron）没有固定间隔，不参与「下次自动更新」。
+// 周期 → 毫秒；失败时优先显示后端给出的重试时间。
 const INTERVAL_MS: Record<string, number> = {
   every30_min: 30 * 60e3,
   hourly: 3600e3,
@@ -81,8 +81,11 @@ const INTERVAL_MS: Record<string, number> = {
 }
 const nextUpdate = computed(() => {
   const times = subs.value
-    .filter((s) => s.enabled && INTERVAL_MS[s.interval] && s.last_updated)
-    .map((s) => new Date(s.last_updated).getTime() + INTERVAL_MS[s.interval])
+    .filter((s) => s.enabled && s.interval !== 'manual')
+    .map((s) => {
+      if (s.next_retry_at) return new Date(s.next_retry_at).getTime()
+      return s.last_updated ? new Date(s.last_updated).getTime() + INTERVAL_MS[s.interval] : NaN
+    })
     .filter((t) => Number.isFinite(t))
   if (!times.length) return '—'
   return new Date(Math.min(...times)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })

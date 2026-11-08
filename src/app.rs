@@ -173,9 +173,12 @@ pub enum AppEvent {
         /// 更新完成后的节点数（进行中为 None）。
         #[serde(default)]
         node_count: Option<usize>,
-        /// 更新成功后的时间（RFC3339；进行中/失败为 None）。
+        /// 最近一次成功更新的时间（RFC3339；进行中为 None）。
         #[serde(default)]
         last_updated: Option<String>,
+        /// 失败后的下次自动重试时间（RFC3339；成功后清空）。
+        #[serde(default)]
+        next_retry_at: Option<String>,
     },
     /// 节点延迟测试结果（id 为节点 ID，latency 为毫秒，None 表示超时/不可达）。
     Latency {

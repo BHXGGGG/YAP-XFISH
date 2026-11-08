@@ -1,0 +1,533 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-29T07:58:11.472Z",
+  "title": "Design System: YAP-XFISH",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "信号蓝 Signal Blue",
+        "canonical": "#2563eb",
+        "tonalRamp": [
+          "#1e3a8a",
+          "#1e40af",
+          "#1d4ed8",
+          "#2563eb",
+          "#3b82f6",
+          "#60a5fa",
+          "#93c5fd",
+          "#dbeafe"
+        ]
+      },
+      "primary-bright": {
+        "role": "primary",
+        "displayName": "亮蓝 Bright Blue",
+        "canonical": "#3b82f6",
+        "tonalRamp": [
+          "#1e3a8a",
+          "#1e40af",
+          "#1d4ed8",
+          "#2563eb",
+          "#3b82f6",
+          "#60a5fa",
+          "#93c5fd",
+          "#dbeafe"
+        ]
+      },
+      "primary-deep": {
+        "role": "primary",
+        "displayName": "深蓝 Deep Blue",
+        "canonical": "#1d4ed8",
+        "tonalRamp": [
+          "#1e3a8a",
+          "#1e40af",
+          "#1d4ed8",
+          "#2563eb",
+          "#3b82f6",
+          "#60a5fa",
+          "#93c5fd",
+          "#dbeafe"
+        ]
+      },
+      "primary-tint": {
+        "role": "primary",
+        "displayName": "浅蓝 Tint Blue",
+        "canonical": "#93c5fd",
+        "tonalRamp": [
+          "#1e3a8a",
+          "#1e40af",
+          "#1d4ed8",
+          "#2563eb",
+          "#3b82f6",
+          "#60a5fa",
+          "#93c5fd",
+          "#dbeafe"
+        ]
+      },
+      "primary-wash": {
+        "role": "primary",
+        "displayName": "蓝洗 Wash Blue",
+        "canonical": "#eff6ff",
+        "tonalRamp": [
+          "#1e3a8a",
+          "#1e40af",
+          "#1d4ed8",
+          "#2563eb",
+          "#3b82f6",
+          "#60a5fa",
+          "#93c5fd",
+          "#dbeafe"
+        ]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "画布 Canvas",
+        "canonical": "#f5f6f8",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "面板 Paper",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "描边 Hairline",
+        "canonical": "#e6e8eb",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "正文 Ink",
+        "canonical": "#1f2329",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "ink-strong": {
+        "role": "neutral",
+        "displayName": "标题 Ink-Strong",
+        "canonical": "#0f172a",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "辅助 Muted",
+        "canonical": "#8a9099",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "muted-soft": {
+        "role": "neutral",
+        "displayName": "辅助替代 Muted-Soft",
+        "canonical": "#6b7280",
+        "tonalRamp": [
+          "#0f172a",
+          "#1f2937",
+          "#374151",
+          "#6b7280",
+          "#9ca3af",
+          "#d1d5db",
+          "#e5e7eb",
+          "#f3f4f6"
+        ]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "通 Success",
+        "canonical": "#16a34a",
+        "tonalRamp": [
+          "#14532d",
+          "#166534",
+          "#15803d",
+          "#16a34a",
+          "#22c55e",
+          "#4ade80",
+          "#86efac",
+          "#dcfce7"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "断 Danger",
+        "canonical": "#dc2626",
+        "tonalRamp": [
+          "#7f1d1d",
+          "#991b1b",
+          "#b91c1c",
+          "#dc2626",
+          "#ef4444",
+          "#f87171",
+          "#fca5a5",
+          "#fee2e2"
+        ]
+      },
+      "warn": {
+        "role": "tertiary",
+        "displayName": "慢 Warning",
+        "canonical": "#f59e0b",
+        "tonalRamp": [
+          "#78350f",
+          "#92400e",
+          "#b45309",
+          "#f59e0b",
+          "#fbbf24",
+          "#fcd34d",
+          "#fde68a",
+          "#fef3c7"
+        ]
+      },
+      "log-shell": {
+        "role": "neutral",
+        "displayName": "终端底 Log Shell",
+        "canonical": "#0f1115",
+        "tonalRamp": [
+          "#05070a",
+          "#0f1115",
+          "#171a21",
+          "#23272f",
+          "#3b414d",
+          "#5b636f",
+          "#8b939f",
+          "#d6e0ff"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline 页面标题",
+        "purpose": "每页一个 section h2，19px/700，系统最大字号。"
+      },
+      "title": {
+        "displayName": "Title 区块/对话框标题",
+        "purpose": "16px/700；section h3 用 15px 辅助灰变体。"
+      },
+      "value": {
+        "displayName": "Value 读数",
+        "purpose": "卡片主数值 18px/600，永远配 12px 灰标签在上方。"
+      },
+      "body": {
+        "displayName": "Body 正文",
+        "purpose": "壳层与长段落 14px/1.6，控制在 65–75ch。"
+      },
+      "data": {
+        "displayName": "Data 数据面",
+        "purpose": "视图层默认 12px/1.45：列表、元信息、说明文字。"
+      },
+      "label": {
+        "displayName": "Label 标签",
+        "purpose": "字段名与卡片标签 12px/600，字距 0.2px，在数值之上。"
+      },
+      "micro": {
+        "displayName": "Micro 芯片",
+        "purpose": "协议芯片 10px/700，字距 0.4px。"
+      },
+      "mono": {
+        "displayName": "Mono 等宽",
+        "purpose": "日志正文 12px，配合 tabular-nums 对齐。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "action-lift",
+        "value": "0 4px 12px rgba(37, 99, 235, 0.25)",
+        "purpose": "主行动按钮浮起；唯一的彩色静止投影。"
+      },
+      {
+        "name": "action-lift-strong",
+        "value": "0 6px 16px rgba(37, 99, 235, 0.32)",
+        "purpose": "主行动按钮 hover/pressed。"
+      },
+      {
+        "name": "selection-ring",
+        "value": "0 0 0 1px #2563eb inset",
+        "purpose": "选中环。是环不是投影，替代填充色。"
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px rgba(59, 130, 246, 0.18)",
+        "purpose": "输入框聚焦软环，无位移。"
+      },
+      {
+        "name": "live-dot-halo",
+        "value": "0 0 0 3px rgba(34, 197, 94, 0.2)",
+        "purpose": "状态灯绿点光晕。"
+      },
+      {
+        "name": "dialog",
+        "value": "0 1px 0 rgba(255,255,255,0.6) inset, 0 24px 48px -12px rgba(15,23,42,0.35), 0 8px 16px rgba(15,23,42,0.18)",
+        "purpose": "对话框卡片三层：纸厚 + 离地高。"
+      },
+      {
+        "name": "toast",
+        "value": "0 4px 16px rgba(0,0,0,0.2)",
+        "purpose": "toast 药丸轻投影。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-fast",
+        "value": "150ms ease",
+        "purpose": "border-color / background / box-shadow 状态反馈。系统默认节奏。"
+      },
+      {
+        "name": "press-fast",
+        "value": "120ms ease",
+        "purpose": "按钮 transform 与 filter 的按下反馈。"
+      },
+      {
+        "name": "mask-in",
+        "value": "180ms ease-out",
+        "purpose": "对话框遮罩淡入。"
+      },
+      {
+        "name": "dialog-in",
+        "value": "220ms cubic-bezier(.2,.8,.2,1)",
+        "purpose": "对话框卡片入场。"
+      },
+      {
+        "name": "meter-grow",
+        "value": "300ms ease",
+        "purpose": "侧栏/进度条宽度变化。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "md",
+        "value": "1280px",
+        "note": "节点网格 4 → 3 列"
+      },
+      {
+        "name": "lg-form",
+        "value": "1100px",
+        "note": "局部表单降级补丁，非系统断点"
+      },
+      {
+        "name": "sm",
+        "value": "900px",
+        "note": "节点网格 → 2 列，速率卡降为 1 格"
+      },
+      {
+        "name": "xs",
+        "value": "640px",
+        "note": "局部表单降级补丁"
+      },
+      {
+        "name": "xxs",
+        "value": "560px",
+        "note": "节点网格 → 1 列"
+      },
+      {
+        "name": "xxxs",
+        "value": "480px",
+        "note": "局部补丁"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "主行动按钮 Primary Action Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "每屏唯一的渐变动作：连接、保存、测速。",
+      "html": "<button class=\"ds-btn-primary\">立即连接</button>",
+      "css": ".ds-btn-primary { background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%); border: 1px solid #1d4ed8; color: #fff; padding: 8px 18px; border-radius: 8px; font: 600 14px/1.4 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; box-shadow: 0 4px 12px rgba(37,99,235,.25); cursor: pointer; transition: box-shadow .15s, filter .15s; }\n.ds-btn-primary:hover { box-shadow: 0 6px 16px rgba(37,99,235,.32); filter: brightness(1.04); }\n.ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(59,130,246,.35), 0 4px 12px rgba(37,99,235,.25); }\n.ds-btn-primary:active { filter: brightness(.96); }"
+    },
+    {
+      "name": "静音按钮 Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "次级动作、取消、刷新：白底灰边，hover 才转蓝。",
+      "html": "<button class=\"ds-btn-quiet\">取消</button>",
+      "css": ".ds-btn-quiet { background: #fff; border: 1px solid #e6e8eb; color: #1f2329; padding: 8px 16px; border-radius: 8px; font: 400 14px/1.4 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; cursor: pointer; transition: .15s; }\n.ds-btn-quiet:hover { border-color: #2563eb; color: #2563eb; }\n.ds-btn-quiet:focus-visible { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.18); }\n.ds-btn-quiet:disabled { opacity: .5; cursor: not-allowed; }"
+    },
+    {
+      "name": "节点卡片 Node Card",
+      "kind": "card",
+      "refersTo": "node-card",
+      "description": "代理节点的标准砖块，4 列密排；选中用 1px 内环，不用填充。",
+      "html": "<div class=\"ds-node-card\"><div class=\"ds-node-head\"><span class=\"ds-node-chip\">HY2</span><span class=\"ds-node-name\">东京 · 樱花 03</span></div><div class=\"ds-node-lat\">42 ms</div></div>",
+      "css": ".ds-node-card { background: #fff; border: 1px solid #e6e8eb; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; cursor: pointer; user-select: none; transition: border-color .15s, box-shadow .15s, background .15s; }\n.ds-node-card:hover { border-color: #93c5fd; }\n.ds-node-card.is-sel { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb inset; }\n.ds-node-head { display: flex; align-items: center; gap: 6px; min-width: 0; }\n.ds-node-chip { background: #3b82f6; color: #fff; border-radius: 3px; padding: 1px 7px; font: 700 10px/1.5 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; letter-spacing: .4px; }\n.ds-node-name { font: 600 13px/1.4 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ds-node-lat { font: 400 12px/1.45 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #6b7280; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "协议芯片 Protocol Chip",
+      "kind": "chip",
+      "refersTo": "protocol-chip",
+      "description": "10px 大写协议缩写，方角 3px，与药丸型状态徽标互不混用。",
+      "html": "<span class=\"ds-proto\">VLESS</span>",
+      "css": ".ds-proto { display: inline-block; background: #3b82f6; color: #fff; border-radius: 3px; padding: 1px 7px; font: 700 10px/1.6 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; letter-spacing: .4px; }"
+    },
+    {
+      "name": "输入框 Input Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "1px 灰描边，聚焦转蓝并加 3px 软环，无位移。",
+      "html": "<label class=\"ds-field-wrap\"><span class=\"ds-field-label\">订阅地址</span><input class=\"ds-field\" placeholder=\"https://example.com/sub\" /></label>",
+      "css": ".ds-field-wrap { display: flex; flex-direction: column; gap: 6px; }\n.ds-field-label { font: 600 12px/1.4 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #6b7280; letter-spacing: .2px; }\n.ds-field { width: 100%; background: #fff; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 10px; font: 400 13px/1.4 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #1f2329; transition: border-color .15s, box-shadow .15s, background .15s; }\n.ds-field::placeholder { color: #9ca3af; }\n.ds-field:hover { border-color: #93c5fd; }\n.ds-field:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.18); }"
+    },
+    {
+      "name": "状态药丸 Status Pill",
+      "kind": "chip",
+      "refersTo": "pill-badge-on",
+      "description": "通/断的二态徽标，999px 药丸，13px/600。",
+      "html": "<span class=\"ds-pill ds-pill-on\">已连接</span> <span class=\"ds-pill ds-pill-off\">已断开</span>",
+      "css": ".ds-pill { display: inline-block; border-radius: 999px; padding: 3px 12px; font: 600 13px/1.5 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; }\n.ds-pill-on { background: #dcfce7; color: #166534; }\n.ds-pill-off { background: #fee2e2; color: #991b1b; }"
+    },
+    {
+      "name": "日志控制台 Log Console",
+      "kind": "custom",
+      "refersTo": "log-console",
+      "description": "全系统唯一的大块深色面，声明「这是原始输出」。",
+      "html": "<div class=\"ds-log\"><div><span class=\"ds-log-t\">15:42:08</span> <span class=\"ds-log-lv\">INFO</span> 启动 sing-box 内核</div><div><span class=\"ds-log-t\">15:42:11</span> <span class=\"ds-log-lv ds-log-err\">ERROR</span> 订阅更新失败：timeout</div></div>",
+      "css": ".ds-log { background: #0f1115; color: #d6e0ff; border-radius: 10px; padding: 14px; font: 400 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 320px; overflow: auto; white-space: pre-wrap; }\n.ds-log-t { color: #6b7280; }\n.ds-log-lv { color: #3b82f6; font-weight: 700; }\n.ds-log-err { color: #dc2626; }"
+    },
+    {
+      "name": "对话框对话框卡片 Dialog Card",
+      "kind": "custom",
+      "refersTo": "dialog-card",
+      "description": "14px 大圆角 + 三层阴影，遮罩是渐变、不加模糊。",
+      "html": "<div class=\"ds-modal\"><div class=\"ds-modal-card\"><div class=\"ds-modal-head\"><span class=\"ds-modal-icon\">⚑</span><div><h3 class=\"ds-modal-title\">添加订阅</h3><p class=\"ds-modal-sub\">粘贴订阅链接，支持 Clash / sing-box</p></div></div><div class=\"ds-modal-body\">内容区</div></div></div>",
+      "css": ".ds-modal { background: radial-gradient(ellipse at top, rgba(30,64,175,.18), rgba(15,23,42,.55)); border-radius: 10px; padding: 24px; display: flex; justify-content: center; }\n.ds-modal-card { background: linear-gradient(180deg, #fff 0%, #fbfcff 100%); border: 1px solid rgba(15,23,42,.08); border-radius: 14px; box-shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 24px 48px -12px rgba(15,23,42,.35), 0 8px 16px rgba(15,23,42,.18); overflow: hidden; max-width: 420px; }\n.ds-modal-head { display: flex; align-items: center; gap: 12px; padding: 18px 22px 14px; border-bottom: 1px solid #eef0f4; background: linear-gradient(180deg, #f8fafc 0%, rgba(248,250,252,0) 100%); }\n.ds-modal-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%); color: #fff; font-size: 18px; font-weight: 700; box-shadow: 0 4px 12px rgba(59,130,246,.35); flex-shrink: 0; }\n.ds-modal-title { margin: 0; font: 700 16px/1.4 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #0f172a; letter-spacing: .2px; }\n.ds-modal-sub { margin: 2px 0 0; font: 400 12px/1.5 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #6b7280; }\n.ds-modal-body { padding: 16px 22px 20px; font: 400 14px/1.6 'system-ui, \"Segoe UI\", \"Microsoft YaHei\", sans-serif'; color: #374151; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "安静的仪表台 (The Quiet Instrument Panel)",
+    "overview": "这是一个你打开只为看一眼的界面。用户不是来欣赏页面的，是来确认「连上了吗、延迟多少、这个月跑了多少流量」——看完就走。所以整个系统的职责不是表达，是读数：数字在最前面，装饰在后面，颜色只在状态变化时才出现。界面安静，是因为一个能穿透代理的客户端不该让人紧张。\n\n密度上这是一个偏紧的工具型面板：正文 14px 只用在侧栏和长文，数据面大量落在 12px，卡片内边距 10–16px，行高 1.3–1.45。留白不服务于「呼吸感」，服务于分组——用 4/6/8/10px 的间距把标签和数值粘成一个读块，再用 14/16px 把读块彼此分开。视觉层级靠字重（400/600/700）和灰度，不靠尺寸跳跃：整个系统最大字号只有 19px，没有 hero，没有展示型排版。\n\n材质是纸，不是玻璃。静止的面永远是平的：白面板 + 1px 冷灰描边 + 10px 圆角。阴影是事件，不是常态——只有当某样东西浮在页面之上（对话框、toast）或者需要被按下（主行动按钮）时，它才获得阴影。选中的节点不用填充色，用一圈 1px 的内描边，因为它仍然是平的，只是被圈住了。",
+    "keyCharacteristics": [
+      "读数优先：数值 18px/600，标签 12px、灰、在数值上方。",
+      "平到底：默认零阴影，描边代替投影。",
+      "单一蓝：主色只出现在「这一屏唯一的主动作」上；其余颜色全是状态语义（绿=通、红=断、琥珀=慢）。",
+      "中文原生：字号、行高、字重按中文渲染调整，不做西文优先的紧凑排版。",
+      "圆角只有一套语汇：3px 芯片 / 8px 控件 / 10px 卡片 / 14px 对话框 / 999px 药丸。"
+    ],
+    "rules": [
+      {
+        "name": "The One Blue Rule",
+        "body": "信号蓝只允许出现在每一屏的一个主行动上（连接、保存、测速），加少量文本链接。一个屏幕上出现两处渐变按钮就是错的——第二处应降级成静音按钮（白底 + 灰边）。",
+        "section": "colors"
+      },
+      {
+        "name": "The Retirement Rule",
+        "body": "#4096ff / #2f80ed 已退役。任何新样式都不许再引用，也不许引入 Tailwind 之外的第三套蓝。",
+        "section": "colors"
+      },
+      {
+        "name": "The No-New-Gray Rule",
+        "body": "灰阶已有 6 档（#1f2329 / #0f172a / #374151 / #8a9099 / #6b7280 / #9ca3af）。新增第 7 种灰之前，先从这 6 档里挑。",
+        "section": "colors"
+      },
+      {
+        "name": "The Twelve-Pixel Rule",
+        "body": "数据面说 12px，壳层说 14px。往卡片、列表、表格里加文字，默认 12px；只有侧栏导航和长段落用 14px。这两个值之外的字号必须有理由（19px 标题、18px 数值、10px 芯片）。",
+        "section": "typography"
+      },
+      {
+        "name": "The Label-Above Rule",
+        "body": "标签在数值上方，字号小两档，颜色辅助灰。反过来（黑体大字标签压着数值）会毁掉读数的第一眼。",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "任何会被上下对齐比对的数字（延迟、流量、时间、日志计数）必须 font-variant-numeric: tabular-nums，否则列会跳。",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "静止的面零阴影。加阴影前先问：这东西浮在页面之上了吗？没有就用描边，不要用投影。",
+        "section": "elevation"
+      },
+      {
+        "name": "The Ring-Not-Fill Rule",
+        "body": "选中态用 1px 内描边环，不用填充背景、不用左侧色条。物体仍在纸面内，只是被圈住。",
+        "section": "elevation"
+      },
+      {
+        "name": "The No-Glow-On-Paper Rule",
+        "body": "彩色投影只允许出现在主行动按钮和状态灯上。把 rgba(59,130,246,…) 的发光加在静止卡片上是禁止的——这是最典型的 AI 界面味。",
+        "section": "elevation"
+      },
+      {
+        "name": "The Five-Radius Rule",
+        "body": "只在 3 / 8 / 10 / 14 / 999 里选。看到 6px、12px、16px，是有人没查这套语汇。",
+        "section": "shapes"
+      },
+      {
+        "name": "The Square-Chip Rule",
+        "body": "芯片要方、药丸要圆。协议芯片（信息，可密集并排）用 3px；状态徽标（状态，单独出现）用 999px。两者不可互换，那是信息与状态的分界。",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do 用 12px 做数据面默认字号，14px 只留给壳层与长段落（The Twelve-Pixel Rule）。",
+      "Do 让标签在数值上方、小两档、辅助灰；数值 18px/600。",
+      "Do 用 border: 1px solid #e6e8eb + border-radius: 10px 表达卡片，静止态零阴影。",
+      "Do 用 1px 内描边环（0 0 0 1px #2563eb inset）表达选中，不用填充色。",
+      "Do 每屏只给一个渐变主按钮；其余动作降级成白底静音按钮（The One Blue Rule）。",
+      "Do 给数字加 font-variant-numeric: tabular-nums；日志和任何字符对齐内容用 ui-monospace。",
+      "Do 只在 3 / 8 / 10 / 14 / 999 里选圆角。",
+      "Do 用 150ms 的 border-color/background 过渡做状态反馈——够快，不会被察觉成动画。"
+    ],
+    "donts": [
+      "Don't 再引用 #4096ff / #2f80ed——已退役；新样式一律 #2563eb 家族（The Retirement Rule）。",
+      "Don't 引入第 7 种灰；6 档之外先复用（The No-New-Gray Rule）。",
+      "Don't 给静止卡片加彩色投影或发光（rgba(59,130,246,…) 的 glow 属于按钮和状态灯，不属于纸面）。",
+      "Don't 把靛蓝 #6366f1 扩散出去——它目前只存在于对话框图标块，是待收敛的漂移，不是新副色。",
+      "Don't 用超过 19px 的字号；系统没有 hero，也没有展示型排版。",
+      "Don't 加 backdrop-filter: blur()——遮罩是渐变、不加模糊，这是低配机器上不掉帧的代价。",
+      "Don't 复制按钮样式到各处；渐变已经复制了 4 份，第 5 份请先抽成 token。",
+      "Don't 在侧栏导航 active 态用渐变——导航不是动作，用平涂 #2563eb。"
+    ]
+  }
+}

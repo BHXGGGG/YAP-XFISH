@@ -1,6 +1,10 @@
-YAP-XFISH v0.1.52 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.1.53 —— Windows Sing-box 代理客户端（自包含分发）
 
 【本版更新】
+- HTTP(S) 节点保留订阅中的认证与 TLS 配置；带认证或 TLS 的 HTTP 节点通过 sing-box 测速，避免测速时丢失节点参数。
+- 订阅更新失败时保留上次成功的节点数和更新时间，5 分钟后自动重试；手动更新可立即重试。
+
+【v0.1.52】
 - 「检查更新」和「立即更新」不再调用 GitHub API：改为读取发布页的跳转地址拿版本号，
   下载地址按固定命名规则拼出，不会再有「请求次数已达限制」。
 - 检查更新和下载都优先直连 GitHub，直连失败才使用当前节点。
@@ -97,5 +101,5 @@ YAP-XFISH v0.1.52 —— Windows Sing-box 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.1.52
+- YAP-XFISH v0.1.53
 - 本包附带 sing-box v1.14.4（windows/amd64，与 yap-xfish.exe 同目录；libcronet.dll 供 naive 协议使用）

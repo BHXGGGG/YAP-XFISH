@@ -56,6 +56,9 @@ pub struct Subscription {
     pub user_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<String>,
+    /// 更新失败后的下次自动重试时间（RFC3339）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
     #[serde(default)]
     pub last_status: UpdateStatus,
     #[serde(default)]

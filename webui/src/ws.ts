@@ -58,6 +58,7 @@ export function connectWs() {
           sub.last_message = ev.message
           if (ev.node_count !== undefined && ev.node_count !== null) sub.node_count = ev.node_count
           if (ev.last_updated) sub.last_updated = ev.last_updated
+          if (ev.status === 'success' || ev.status === 'failed') sub.next_retry_at = ev.next_retry_at
         }
       } else if (ev.type === 'subscriptions_refresh') {
         // 后端在订阅「添加 / 删除 / 批量更新」后会广播一次最新列表，避免前端缓存与后端不一致。

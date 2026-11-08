@@ -448,6 +448,7 @@ pub async fn add_subscription(
         enabled: req.enabled,
         user_agent: req.user_agent,
         last_updated: None,
+        next_retry_at: None,
         last_status: UpdateStatus::Idle,
         last_message: String::new(),
         node_count: 0,

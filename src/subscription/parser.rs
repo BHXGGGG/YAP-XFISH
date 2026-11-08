@@ -150,6 +150,15 @@ fn parse_singbox_outbound(v: &Value) -> Option<Node> {
             }
             maybe_singbox_ws(&mut node, v);
         }
+        "http" => {
+            node.username = v.get("username").and_then(|x| x.as_str()).map(|s| s.to_string());
+            node.password = v.get("password").and_then(|x| x.as_str()).map(|s| s.to_string());
+            if let Some(tls) = v.get("tls") {
+                node.tls = tls.get("enabled").and_then(|x| x.as_bool());
+                node.sni = tls.get("server_name").and_then(|x| x.as_str()).map(|s| s.to_string());
+                node.skip_cert_verify = tls.get("insecure").and_then(|x| x.as_bool());
+            }
+        }
         "hysteria2" | "hysteria" => {
             node.password = v.get("password").and_then(|x| x.as_str()).map(|s| s.to_string());
             node.sni = v.get("server").and_then(|x| x.as_str()).map(|s| s.to_string());
@@ -246,6 +255,17 @@ fn parse_clash_proxy(v: &Value) -> Option<Node> {
             node.network = v.get("network").and_then(|n| n.as_str()).map(|s| s.to_string());
             apply_clash_tls_extras(&mut node, v);
             maybe_clash_ws(&mut node, v);
+        }
+        "http" => {
+            node.username = v.get("username").and_then(|x| x.as_str()).map(|s| s.to_string());
+            node.password = v.get("password").and_then(|x| x.as_str()).map(|s| s.to_string());
+            node.tls = v.get("tls").and_then(|x| x.as_bool());
+            node.sni = v
+                .get("sni")
+                .or_else(|| v.get("servername"))
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
+            apply_clash_tls_extras(&mut node, v);
         }
         "hysteria2" => {
             node.password = v.get("password").and_then(|x| x.as_str()).map(|s| s.to_string());
@@ -796,13 +816,41 @@ proxies:
     }
 
     #[test]
+    fn parse_clash_http_proxy_auth_and_tls() {
+        let yaml = r#"
+proxies:
+  - name: "https-http"
+    type: http
+    server: proxy.example
+    port: 8443
+    username: user
+    password: pass
+    tls: true
+    sni: proxy.example
+    skip-cert-verify: true
+"#;
+        let nodes = parse(yaml).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].kind, "http");
+        assert_eq!(nodes[0].username.as_deref(), Some("user"));
+        assert_eq!(nodes[0].password.as_deref(), Some("pass"));
+        assert_eq!(nodes[0].tls, Some(true));
+        assert_eq!(nodes[0].sni.as_deref(), Some("proxy.example"));
+        assert_eq!(nodes[0].skip_cert_verify, Some(true));
+    }
+
+    #[test]
     fn parse_singbox_json() {
-        let json = r#"{"outbounds":[{"type":"shadowsocks","tag":"sb","server":"5.6.7.8","server_port":9999,"method":"aes-256-gcm","password":"pw"}]}"#;
+        let json = r#"{"outbounds":[{"type":"shadowsocks","tag":"sb","server":"5.6.7.8","server_port":9999,"method":"aes-256-gcm","password":"pw"},{"type":"http","tag":"http","server":"proxy.example","server_port":8443,"username":"user","password":"pass","tls":{"enabled":true,"server_name":"proxy.example","insecure":true}}]}"#;
         let n = parse(json).unwrap();
-        assert_eq!(n.len(), 1);
+        assert_eq!(n.len(), 2);
         assert_eq!(n[0].kind, "shadowsocks");
         assert_eq!(n[0].server, "5.6.7.8");
         assert_eq!(n[0].port, 9999);
+        assert_eq!(n[1].kind, "http");
+        assert_eq!(n[1].username.as_deref(), Some("user"));
+        assert_eq!(n[1].password.as_deref(), Some("pass"));
+        assert_eq!(n[1].tls, Some(true));
     }
 
     #[test]

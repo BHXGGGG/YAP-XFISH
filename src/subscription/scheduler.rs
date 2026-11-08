@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::subscription::manager;
-use crate::subscription::model::{Subscription, UpdateInterval};
+use crate::subscription::model::{Subscription, UpdateInterval, UpdateStatus};
 use chrono::{DateTime, Local, TimeZone};
 use std::str::FromStr;
 
@@ -15,7 +15,8 @@ use std::time::Duration;
 pub fn start(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
-        // 首次立即检查一次（跳过 instant 0）
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // 启动 30 秒后开始检查。
         tick.tick().await;
         loop {
             tick.tick().await;
@@ -37,8 +38,16 @@ pub fn start(state: Arc<AppState>) {
     });
 }
 
-/// 计算某订阅的「下次到期时间」。已更新过的以 last_updated 为基准，否则立即到期。
+/// 失败时按重试时间调度，成功时以 last_updated 为周期基准。
 fn next_due(sub: &Subscription, now: DateTime<Local>) -> DateTime<Local> {
+    if sub.last_status == UpdateStatus::Failed && sub.interval != UpdateInterval::Manual {
+        return sub
+            .next_retry_at
+            .as_ref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Local))
+            .unwrap_or(now);
+    }
     let base = sub
         .last_updated
         .as_ref()
@@ -69,4 +78,41 @@ fn next_cron(expr: &str) -> Option<DateTime<Local>> {
 
 fn far_future(now: DateTime<Local>) -> DateTime<Local> {
     now + chrono::Duration::days(3650)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_updates_wait_for_retry_without_changing_the_success_schedule() {
+        let now = DateTime::parse_from_rfc3339("2026-11-08T12:00:00+08:00")
+            .unwrap()
+            .with_timezone(&Local);
+        let mut sub: Subscription = serde_json::from_value(serde_json::json!({
+            "id": "test", "name": "test", "url": "http://127.0.0.1/",
+            "last_updated": (now - chrono::Duration::hours(7)).to_rfc3339(),
+            "last_status": "failed",
+            "next_retry_at": (now + chrono::Duration::minutes(5)).to_rfc3339()
+        }))
+        .unwrap();
+
+        let retry = now + chrono::Duration::minutes(5);
+        assert_eq!(next_due(&sub, now), retry);
+        assert!(now + chrono::Duration::seconds(30) < next_due(&sub, now));
+        assert_eq!(next_due(&sub, retry), retry);
+        assert!(retry + chrono::Duration::minutes(1) >= next_due(&sub, retry));
+
+        sub.last_updated = None;
+        assert_eq!(next_due(&sub, now), retry);
+        sub.interval = UpdateInterval::Manual;
+        assert!(next_due(&sub, retry) > retry);
+
+        sub.interval = UpdateInterval::Every6Hours;
+        sub.next_retry_at = None;
+        assert_eq!(next_due(&sub, now), now);
+        sub.last_status = UpdateStatus::Success;
+        sub.last_updated = Some(now.to_rfc3339());
+        assert_eq!(next_due(&sub, now), now + chrono::Duration::hours(6));
+    }
 }

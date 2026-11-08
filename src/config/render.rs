@@ -584,6 +584,23 @@ fn node_to_outbound_base(node: &Node) -> Value {
             apply_transport(&mut v, node);
             v
         }
+        "http" => {
+            let mut v = json!({
+                "type": "http",
+                "server": node.server,
+                "server_port": node.port,
+            });
+            if let Some(username) = &node.username {
+                v["username"] = json!(username);
+            }
+            if let Some(password) = &node.password {
+                v["password"] = json!(password);
+            }
+            if node.tls == Some(true) {
+                apply_tls(&mut v, node, false);
+            }
+            v
+        }
         "hysteria2" | "hysteria" => {
             // Hysteria v2 协议强制要求 TLS；sing-box 1.13 若缺省 tls 对象会 FATAL
             // `TLS required`。默认启用，并使用节点 SNI 作为 TLS server_name。
@@ -803,5 +820,28 @@ mod tests {
         let rules = v["route"]["rules"].as_array().unwrap();
         let r = rules.iter().find(|r| r.get("domain_suffix").is_some()).unwrap();
         assert_eq!(r["outbound"], "direct");
+    }
+
+    #[test]
+    fn http_outbound_keeps_auth_and_proxy_tls() {
+        let node = Node {
+            id: "http-node".into(),
+            kind: "http".into(),
+            server: "proxy.example".into(),
+            port: 8443,
+            username: Some("user".into()),
+            password: Some("pass".into()),
+            tls: Some(true),
+            sni: Some("proxy.example".into()),
+            skip_cert_verify: Some(true),
+            ..Default::default()
+        };
+        let outbound = node_to_outbound_base(&node);
+        assert_eq!(outbound["type"], "http");
+        assert_eq!(outbound["username"], "user");
+        assert_eq!(outbound["password"], "pass");
+        assert_eq!(outbound["tls"]["enabled"], true);
+        assert_eq!(outbound["tls"]["server_name"], "proxy.example");
+        assert_eq!(outbound["tls"]["insecure"], true);
     }
 }

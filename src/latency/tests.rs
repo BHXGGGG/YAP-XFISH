@@ -279,6 +279,29 @@ async fn http_proxy_is_not_queued_behind_protocol_timeouts() {
     assert_eq!(task.await.unwrap().successful, 2);
 }
 
+#[test]
+fn authenticated_and_tls_http_proxies_use_sing_box() {
+    let mut http = node("http");
+    http.kind = "http".into();
+    let uses_core = |node: &Node| {
+        let context = ProbeContext::for_api(1, "", std::slice::from_ref(node));
+        matches!(
+            context.method_for(node),
+            super::probe::ProbeMethod::Clash(_, _)
+        )
+    };
+
+    assert!(!uses_core(&http));
+    http.username = Some("user".into());
+    http.password = Some("pass".into());
+    assert!(uses_core(&http));
+
+    http.username = None;
+    http.password = None;
+    http.tls = Some(true);
+    assert!(uses_core(&http));
+}
+
 #[tokio::test]
 async fn scope_validation_and_duplicate_requests_preserve_visible_nodes() {
     let mut enabled = node("enabled");

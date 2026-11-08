@@ -9,7 +9,17 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 fn needs_core(node: &Node) -> bool {
+    let http_proxy = matches!(node.kind.as_str(), "http" | "https");
+    let http_options = node.username.is_some()
+        || node.password.is_some()
+        || node.tls == Some(true)
+        || node.extra.as_ref().is_some_and(|extra| {
+            extra.get("username").is_some()
+                || extra.get("password").is_some()
+                || extra.get("tls").is_some()
+        });
     !matches!(node.kind.as_str(), "socks" | "socks5" | "http" | "https")
+        || (http_proxy && http_options)
         || node.detour.as_ref().is_some_and(|d| !d.trim().is_empty())
 }
 
@@ -208,13 +218,20 @@ async fn proxy_measure(node: &Node, url: &str, timeout: Duration) -> Option<u32>
         node.server.clone()
     };
     let mut proxy = reqwest::Proxy::all(format!("{scheme}://{server}:{}", node.port)).ok()?;
-    if let Some(password) = &node.password {
-        let username = node
-            .extra
+    let username = node.username.as_deref().or_else(|| {
+        node.extra
             .as_ref()
             .and_then(|e| e.get("username").or_else(|| e.get("user")))
             .and_then(|v| v.as_str())
-            .unwrap_or_default();
+    });
+    let password = node.password.as_deref().or_else(|| {
+        node.extra
+            .as_ref()
+            .and_then(|e| e.get("password"))
+            .and_then(|v| v.as_str())
+    });
+    if let Some(password) = password {
+        let username = username.unwrap_or_default();
         proxy = proxy.basic_auth(username, password);
     }
     let client = reqwest::Client::builder()

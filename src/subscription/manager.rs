@@ -122,7 +122,6 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
             let msg = format!("下载失败: {e}");
             state.log_with("sub", "error", msg.clone());
             record(state, &sub_id, UpdateStatus::Failed, 0, &msg).await;
-            emit(state, &sub_id, "failed", 100, &msg, Some(0), None);
             return Err(AppError(anyhow::anyhow!(msg)));
         }
     };
@@ -139,14 +138,12 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
             let msg = "订阅解析结果为空".to_string();
             state.log_with("sub", "error", msg.clone());
             record(state, &sub_id, UpdateStatus::Failed, 0, &msg).await;
-            emit(state, &sub_id, "failed", 100, &msg, Some(0), None);
             return Err(AppError(anyhow::anyhow!(msg)));
         }
         Err(e) => {
             let msg = format!("解析失败: {e}");
             state.log_with("sub", "error", msg.clone());
             record(state, &sub_id, UpdateStatus::Failed, 0, &msg).await;
-            emit(state, &sub_id, "failed", 100, &msg, Some(0), None);
             return Err(AppError(anyhow::anyhow!(msg)));
         }
     };
@@ -222,7 +219,6 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
             *p = snap;
             let msg = format!("保存配置失败: {e}");
             record(state, &sub_id, UpdateStatus::Failed, 0, &msg).await;
-            emit(state, &sub_id, "failed", 100, &msg, Some(0), None);
             return Err(AppError(e.into()));
         }
         snap
@@ -257,15 +253,6 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
                 }
             };
             record(state, &sub_id, UpdateStatus::Success, cnt, "更新成功").await;
-            emit(
-                state,
-                &sub_id,
-                "success",
-                100,
-                "更新成功",
-                Some(cnt),
-                Some(chrono::Local::now().to_rfc3339()),
-            );
             // 实时推送最新节点列表，前端无需刷新即可看到订阅拉取的节点。
             state.broadcast_profile().await;
             Ok(())
@@ -279,7 +266,6 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
             }
             let msg = format!("应用失败: {e}");
             record(state, &sub_id, UpdateStatus::Failed, 0, &msg).await;
-            emit(state, &sub_id, "failed", 100, &msg, Some(0), None);
             Err(e)
         }
     }
@@ -303,22 +289,36 @@ fn emit(
         message: message.to_string(),
         node_count,
         last_updated,
+        next_retry_at: None,
     });
 }
 
 async fn record(state: &AppState, id: &str, status: UpdateStatus, count: usize, msg: &str) {
-    {
-        let mut subs = state.subscriptions.write().await;
-        if let Some(s) = subs.iter_mut().find(|s| s.id == id) {
-            s.last_status = status.clone();
-            s.last_message = msg.to_string();
-            s.node_count = count;
-            if status == UpdateStatus::Success {
-                s.last_updated = Some(chrono::Local::now().to_rfc3339());
-            }
-        }
-        let _ = save_subscriptions(&state.data_dir, &subs);
+    let mut subs = state.subscriptions.write().await;
+    let Some(s) = subs.iter_mut().find(|s| s.id == id) else { return };
+    let now = chrono::Local::now();
+    let success = status == UpdateStatus::Success;
+    s.last_status = status;
+    s.last_message = msg.to_string();
+    if success {
+        s.node_count = count;
+        s.last_updated = Some(now.to_rfc3339());
+        s.next_retry_at = None;
+    } else {
+        s.next_retry_at = Some((now + chrono::Duration::minutes(5)).to_rfc3339());
     }
+    let event = AppEvent::Subscription {
+        id: id.to_string(),
+        status: if success { "success" } else { "failed" }.to_string(),
+        progress: 100,
+        message: msg.to_string(),
+        node_count: Some(s.node_count),
+        last_updated: s.last_updated.clone(),
+        next_retry_at: s.next_retry_at.clone(),
+    };
+    let _ = save_subscriptions(&state.data_dir, &subs);
+    drop(subs);
+    state.emit(event);
 }
 
 /// 写入订阅响应头信息：自动名字替换为机场名，记录流量 / 到期时间。
@@ -384,3 +384,6 @@ fn stable_node_id(sub_id: &str, n: &Node) -> String {
     key.hash(&mut h);
     format!("{}-{:x}", sub_id, h.finish())
 }
+
+#[cfg(test)]
+mod tests;

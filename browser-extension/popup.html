@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  body { width: 280px; margin: 0; padding: 12px; font: 13px system-ui, "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  input { width: 100%; box-sizing: border-box; padding: 6px; margin: 4px 0 8px; font: inherit; }
+  .row { display: flex; gap: 6px; }
+  button { flex: 1; padding: 7px 0; font: inherit; cursor: pointer; border: 1px solid #888; border-radius: 4px; background: #f4f4f4; }
+  button.primary { background: #6d4aff; color: #fff; border-color: #6d4aff; }
+  #msg { margin-top: 8px; min-height: 1.2em; word-break: break-all; }
+  .err { color: #c0392b; } .ok { color: #1e8449; }
+  .hint { color: #777; font-size: 12px; }
+  details { margin-top: 8px; color: #555; }
+</style>
+</head>
+<body>
+  <h1>YAP-XFISH 快捷规则</h1>
+  <div class="hint">域名后缀（含所有子域）：</div>
+  <input id="domain" spellcheck="false" />
+  <div class="row">
+    <button id="proxy" class="primary">走代理</button>
+    <button id="direct">直连</button>
+  </div>
+  <div id="msg"></div>
+  <details>
+    <summary>设置</summary>
+    <label class="hint">面板端口（默认 9677）</label>
+    <input id="port" type="number" min="1" max="65535" />
+    <button id="open">打开面板</button>
+  </details>
+  <script src="popup.js"></script>
+</body>
+</html>
