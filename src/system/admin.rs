@@ -96,7 +96,7 @@ pub fn prompt_tun_elevate_or_disable(config_path: &std::path::Path) {
         MessageBoxW, MB_YESNO, MB_ICONWARNING, IDYES,
     };
 
-    let msg = "TUN 模式需要管理员权限才能创建虚拟网卡。\n\n当前进程未以管理员身份运行，继续启动会导致 sing-box 启动失败（错误 59 / Access is denied）。\n\n是否以管理员身份重启？";
+    let msg = "TUN 模式需要管理员权限才能创建虚拟网卡。\n\n当前进程未以管理员身份运行，继续启动会导致 Mihomo 启动失败。\n\n是否以管理员身份重启？";
     let title = "YAP-XFISH — 需要管理员权限";
     let msg_wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
     let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();

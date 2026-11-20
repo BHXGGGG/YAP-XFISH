@@ -19,7 +19,7 @@ pub struct WsOptions {
 }
 
 /// 单个节点（出站），是内部配置模型的最小单元。
-/// 与具体协议无关的公共字段 + `extra` 透传未知字段，渲染时再转为 sing-box outbound。
+/// 与具体协议无关的公共字段 + `extra` 透传未知字段，渲染时再转为 Mihomo proxy。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Node {
     pub id: String,
@@ -38,6 +38,8 @@ pub struct Node {
     pub cipher: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_service_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,10 +84,21 @@ pub struct Node {
     pub latency_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_id: Option<String>,
-    /// 链式代理前置出站：值为另一节点的 `id`（渲染为 sing-box outbound.`detour`）。
-    /// `None`/空 = 直连拨号，不经前置。订阅更新时按稳定 id 尽量保留。
+    /// 本地链式前置覆盖：节点 id 指定前置，空串明确禁用，None 使用导入配置。
+    /// 订阅更新时按稳定 id 保留本地设置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detour: Option<String>,
+}
+
+impl Node {
+    pub fn detour(&self) -> Option<&str> {
+        self.detour
+            .as_deref()
+            .or_else(|| self.extra.as_ref()?.get("dialer-proxy")?.as_str())
+            .or_else(|| self.extra.as_ref()?.get("detour")?.as_str())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+    }
 }
 
 fn default_kind() -> String {
@@ -107,7 +120,7 @@ fn default_rule_type() -> String {
 }
 
 /// 内部配置模型：节点列表 + 选中节点 + 规则 + 模式。
-/// 渲染为 sing-box config.json 时再展开为具体内核结构。
+/// 渲染为 Mihomo YAML 与本地 Proxy Provider 时再展开为具体内核结构。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppProfile {
     #[serde(default)]

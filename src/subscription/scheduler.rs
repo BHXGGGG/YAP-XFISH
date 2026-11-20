@@ -1,7 +1,7 @@
 use crate::app::AppState;
 use crate::subscription::manager;
 use crate::subscription::model::{Subscription, UpdateInterval, UpdateStatus};
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local};
 use std::str::FromStr;
 
 use std::sync::Arc;
@@ -40,6 +40,7 @@ pub fn start(state: Arc<AppState>) {
 
 /// 失败时按重试时间调度，成功时以 last_updated 为周期基准。
 fn next_due(sub: &Subscription, now: DateTime<Local>) -> DateTime<Local> {
+    if sub.interval == UpdateInterval::Manual { return far_future(now); }
     if sub.last_status == UpdateStatus::Failed && sub.interval != UpdateInterval::Manual {
         return sub
             .next_retry_at
@@ -48,12 +49,11 @@ fn next_due(sub: &Subscription, now: DateTime<Local>) -> DateTime<Local> {
             .map(|d| d.with_timezone(&Local))
             .unwrap_or(now);
     }
-    let base = sub
+    let Some(base) = sub
         .last_updated
         .as_ref()
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|d| d.with_timezone(&Local))
-        .unwrap_or(now);
+        .map(|d| d.with_timezone(&Local)) else { return now; };
 
     let dur = match &sub.interval {
         UpdateInterval::Manual => return far_future(now),
@@ -62,18 +62,25 @@ fn next_due(sub: &Subscription, now: DateTime<Local>) -> DateTime<Local> {
         UpdateInterval::Every6Hours => Duration::from_secs(6 * 60 * 60),
         UpdateInterval::Every12Hours => Duration::from_secs(12 * 60 * 60),
         UpdateInterval::Daily => Duration::from_secs(24 * 60 * 60),
-        UpdateInterval::Cron(expr) => return next_cron(expr).unwrap_or_else(|| far_future(now)),
+        UpdateInterval::Cron(expr) => return parse_cron(expr).ok().and_then(|schedule| schedule.after(&base).next()).unwrap_or_else(|| far_future(now)),
     };
     base + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
 }
 
-/// 解析自定义 Cron 表达式，返回当前时刻之后的首次触发时刻。
-fn next_cron(expr: &str) -> Option<DateTime<Local>> {
-    let schedule = cron::Schedule::from_str(expr).ok()?;
-    let next_utc = schedule.after(&chrono::Utc::now()).next()?;
-    let secs = next_utc.timestamp();
-    let nsec = next_utc.timestamp_subsec_nanos();
-    Local.timestamp_opt(secs, nsec).single()
+pub fn validate_interval(interval: &UpdateInterval) -> crate::error::AppResult<()> {
+    if let UpdateInterval::Cron(expr) = interval {
+        parse_cron(expr).map_err(|e| anyhow::anyhow!("Cron 表达式无效: {e}"))?;
+    }
+    Ok(())
+}
+
+fn parse_cron(expr: &str) -> Result<cron::Schedule, cron::error::Error> {
+    // 五段表达式按本地时区，在每分钟的第 0 秒执行；兼容已保存的六/七段表达式。
+    if expr.split_whitespace().count() == 5 {
+        cron::Schedule::from_str(&format!("0 {expr}"))
+    } else {
+        cron::Schedule::from_str(expr)
+    }
 }
 
 fn far_future(now: DateTime<Local>) -> DateTime<Local> {
@@ -83,6 +90,26 @@ fn far_future(now: DateTime<Local>) -> DateTime<Local> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cron_deadline_stays_due_until_a_successful_update() {
+        let now = DateTime::parse_from_rfc3339("2026-11-19T12:05:00+08:00").unwrap().with_timezone(&Local);
+        let mut sub: Subscription = serde_json::from_value(serde_json::json!({
+            "id": "cron", "name": "cron", "url": "http://127.0.0.1/",
+            "interval": {"cron": "*/5 * * * *"},
+            "last_updated": (now - chrono::Duration::minutes(1)).to_rfc3339(),
+            "last_status": "success"
+        })).unwrap();
+        assert_eq!(next_due(&sub, now), now);
+        assert_eq!(next_due(&sub, now + chrono::Duration::seconds(30)), now);
+        sub.last_updated = Some(now.to_rfc3339());
+        assert_eq!(next_due(&sub, now), now + chrono::Duration::minutes(5));
+        sub.last_updated = None;
+        assert_eq!(next_due(&sub, now), now);
+        sub.interval = UpdateInterval::Hourly;
+        assert_eq!(next_due(&sub, now), now);
+        assert!(validate_interval(&UpdateInterval::Cron("invalid".into())).is_err());
+    }
 
     #[test]
     fn failed_updates_wait_for_retry_without_changing_the_success_schedule() {

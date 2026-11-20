@@ -23,7 +23,7 @@ use crate::{app::AppState, error::{AppError, AppResult}};
 const LATEST_RELEASE_PAGE: &str = "https://github.com/BHXGGGG/YAP-XFISH/releases/latest";
 const RELEASES_URL: &str = "https://github.com/BHXGGGG/YAP-XFISH/releases";
 /// 更新包里允许覆盖到程序目录的文件；其余条目一律忽略。
-const UPDATE_ALLOWED: &[&str] = &["yap-xfish.exe", "sing-box.exe", "libcronet.dll", "README.txt"];
+const UPDATE_ALLOWED: &[&str] = &["yap-xfish.exe", "mihomo.exe", "libcronet.dll", "README.txt"];
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,7 +42,7 @@ pub struct UpdateCheck {
     release_url: String,
     /// 仅含程序文件的更新包（体积小，自动更新默认用它）
     update_asset: Option<AssetInfo>,
-    /// 含 sing-box 的完整包
+    /// 含 Mihomo 的完整包
     full_asset: Option<AssetInfo>,
 }
 
@@ -225,7 +225,7 @@ fn release_report(current_version: &str, tag: &str) -> anyhow::Result<UpdateChec
         status,
         release_url: release_url.to_string(),
         update_asset: asset("update.zip"),
-        full_asset: asset("windows-amd64.zip"),
+        full_asset: asset("mihomo-windows-amd64.zip"),
     })
 }
 
@@ -238,8 +238,8 @@ pub struct UpdateProgress {
     pub downloaded: u64,
     pub total: u64,
     pub version: Option<String>,
-    /// 本次更新是否同时包含 sing-box
-    pub includes_singbox: bool,
+    /// 本次更新是否同时包含 Mihomo
+    pub includes_mihomo: bool,
     pub error: Option<String>,
 }
 
@@ -250,7 +250,7 @@ impl Default for UpdateProgress {
             downloaded: 0,
             total: 0,
             version: None,
-            includes_singbox: false,
+            includes_mihomo: false,
             error: None,
         }
     }
@@ -369,32 +369,24 @@ async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
     fs::create_dir_all(&stage)?;
 
     let exe_dir = crate::app::exe_dir();
-    let local_singbox = sha256_file(&exe_dir.join("sing-box.exe"));
+    let local_mihomo = sha256_file(&exe_dir.join("mihomo.exe"));
     set_progress(|p| {
         p.state = "downloading";
         p.version = Some(version.clone());
         p.total = 0;
         p.downloaded = 0;
-        p.includes_singbox = false;
+        p.includes_mihomo = false;
         p.error = None;
     });
 
     let update_url = release_asset_url(&tag, "update.zip");
-    let full_url = release_asset_url(&tag, "windows-amd64.zip");
+    let full_url = release_asset_url(&tag, "mihomo-windows-amd64.zip");
 
-    // 优先下载体积小的更新包；清单显示 sing-box 变了才回退到完整包。
+    // Prefer the small app update unless the bundled Mihomo version changed.
     let mut source: Option<(PathBuf, bool)> = None;
     let update_path = dir.join("update.zip");
     if download_update_asset(state, &update_url, &update_path).await? {
-        let changed = match (
-            read_manifest(&update_path).and_then(|m| m.singbox_sha256),
-            local_singbox.clone(),
-        ) {
-            (Some(want), Some(local)) => !want.eq_ignore_ascii_case(&local),
-            // 本机没有 sing-box 时无法确认一致，按需要完整包处理
-            (Some(_), None) => true,
-            _ => false,
-        };
+        let changed = mihomo_changed(read_manifest(&update_path), local_mihomo.as_deref());
         if !changed {
             source = Some((update_path, false));
         }
@@ -406,10 +398,10 @@ async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
         }
         source = Some((full_path, true));
     }
-    let (zip_path, includes_singbox) = source.unwrap();
+    let (zip_path, includes_mihomo) = source.unwrap();
 
     set_progress(|p| p.state = "extracting");
-    let files = extract_zip(&zip_path, &stage, includes_singbox)?;
+    let files = extract_zip(&zip_path, &stage, includes_mihomo)?;
     let script = dir.join("apply.ps1");
     // Windows PowerShell 5.1 无 BOM 时按 ANSI 读取脚本，中文路径会乱码，必须带 UTF-8 BOM
     fs::write(
@@ -422,7 +414,7 @@ async fn run_update(state: &Arc<AppState>) -> anyhow::Result<()> {
 
     set_progress(|p| {
         p.state = "ready";
-        p.includes_singbox = includes_singbox;
+        p.includes_mihomo = includes_mihomo;
         p.downloaded = p.total;
     });
     state.log_with(
@@ -460,10 +452,8 @@ async fn try_download(client: &Client, url: &str, dest: &Path) -> anyhow::Result
     let mut file = tokio::fs::File::create(dest)
         .await
         .with_context(|| format!("无法写入 {}", dest.display()))?;
-    let mut hasher = Sha256::new();
     let mut downloaded = 0u64;
     while let Some(chunk) = response.chunk().await.map_err(request_error)? {
-        hasher.update(&chunk);
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         set_progress(|p| p.downloaded = downloaded);
@@ -498,7 +488,17 @@ fn sha256_file(path: &Path) -> Option<String> {
 #[derive(Deserialize)]
 struct UpdateManifest {
     #[serde(default)]
+    mihomo_sha256: Option<String>,
+    #[serde(default)]
     singbox_sha256: Option<String>,
+}
+
+fn mihomo_changed(manifest: Option<UpdateManifest>, local: Option<&str>) -> bool {
+    let Some(manifest) = manifest else { return true };
+    let Some(want) = manifest.mihomo_sha256.or(manifest.singbox_sha256) else {
+        return true;
+    };
+    local.is_none_or(|local| !want.eq_ignore_ascii_case(local))
 }
 
 fn read_manifest(zip_path: &Path) -> Option<UpdateManifest> {
@@ -511,7 +511,7 @@ fn read_manifest(zip_path: &Path) -> Option<UpdateManifest> {
 }
 
 /// 只解压白名单文件，忽略路径分隔符，防止 zip 目录穿越。
-fn extract_zip(zip_path: &Path, stage: &Path, allow_singbox: bool) -> anyhow::Result<Vec<String>> {
+fn extract_zip(zip_path: &Path, stage: &Path, allow_mihomo: bool) -> anyhow::Result<Vec<String>> {
     let file = File::open(zip_path).context("打开更新包失败")?;
     let mut archive = zip::ZipArchive::new(file).context("更新包损坏，无法解压")?;
     let mut written = Vec::new();
@@ -521,7 +521,7 @@ fn extract_zip(zip_path: &Path, stage: &Path, allow_singbox: bool) -> anyhow::Re
         if name.contains('/') || name.contains('\\') || !UPDATE_ALLOWED.contains(&name.as_str()) {
             continue;
         }
-        if name == "sing-box.exe" && !allow_singbox {
+        if name == "mihomo.exe" && !allow_mihomo {
             continue;
         }
         if entry.size() > 300 * 1024 * 1024 {
@@ -536,10 +536,13 @@ fn extract_zip(zip_path: &Path, stage: &Path, allow_singbox: bool) -> anyhow::Re
     if !written.iter().any(|n| n == "yap-xfish.exe") {
         bail!("更新包中缺少 yap-xfish.exe");
     }
+    if allow_mihomo && !written.iter().any(|n| n == "mihomo.exe") {
+        bail!("完整更新包中缺少 mihomo.exe");
+    }
     Ok(written)
 }
 
-/// 生成更新脚本：等旧进程退出 → 覆盖文件 → 重新启动。
+/// 生成更新脚本：等待退出，保留原文件后安装；失败时恢复并留下安装材料。
 fn build_script(
     exe_dir: &Path,
     stage: &Path,
@@ -550,7 +553,7 @@ fn build_script(
     let quoted = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
     let skip = if skip_start { "$true" } else { "$false" };
     format!(
-        r#"# 由 YAP-XFISH 自动生成：等待旧进程退出后替换程序文件并重启。
+        r#"# 等待旧进程退出后替换程序文件并重启。
 $ErrorActionPreference = 'Stop'
 $exeDir = {exe_dir}
 $exe = Join-Path $exeDir 'yap-xfish.exe'
@@ -558,34 +561,94 @@ $stage = {stage}
 $updateDir = {update_dir}
 $targetPid = {pid}
 $skipStart = {skip}
+$backup = Join-Path $updateDir ('backup-' + [guid]::NewGuid().ToString('N'))
+$changed = @()
+$oldExited = $false
 
-for ($i = 0; $i -lt 240; $i++) {{
-  if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {{ break }}
-  Start-Sleep -Milliseconds 250
-}}
-Start-Sleep -Milliseconds 600
-
-$files = @('yap-xfish.exe', 'libcronet.dll', 'sing-box.exe', 'README.txt')
-foreach ($name in $files) {{
-  $src = Join-Path $stage $name
-  if (-not (Test-Path -LiteralPath $src)) {{ continue }}
-  $dst = Join-Path $exeDir $name
+function Move-WithRetry($src, $dst) {{
   for ($k = 0; $k -lt 30; $k++) {{
     try {{
-      Copy-Item -LiteralPath $src -Destination $dst -Force
-      break
+      Move-Item -LiteralPath $src -Destination $dst
+      return
     }} catch {{
+      if ($k -eq 29) {{ throw "无法替换 $src ：$($_.Exception.Message)" }}
       Start-Sleep -Milliseconds 300
     }}
   }}
 }}
 
-if (-not $skipStart) {{
-  Start-Process -FilePath $exe -WorkingDirectory $exeDir
+try {{
+  for ($i = 0; $i -lt 240; $i++) {{
+    if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 250
+  }}
+  if (Get-Process -Id $targetPid -ErrorAction SilentlyContinue) {{
+    throw '旧进程未退出，已停止安装。'
+  }}
+  $oldExited = $true
+  Start-Sleep -Milliseconds 600
+  if (-not (Test-Path -LiteralPath (Join-Path $stage 'yap-xfish.exe') -PathType Leaf)) {{
+    throw '更新文件缺失，请重新下载更新包。'
+  }}
+  New-Item -ItemType Directory -Path $backup | Out-Null
+  $files = @('yap-xfish.exe', 'libcronet.dll', 'mihomo.exe', 'README.txt')
+  foreach ($name in $files) {{
+    $src = Join-Path $stage $name
+    if (-not (Test-Path -LiteralPath $src)) {{ continue }}
+    $dst = Join-Path $exeDir $name
+    if (Test-Path -LiteralPath $dst) {{
+      Move-WithRetry $dst (Join-Path $backup $name)
+    }}
+    $changed += $name
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+  }}
+  if (-not $skipStart) {{
+    Start-Process -FilePath $exe -WorkingDirectory $exeDir -WindowStyle Hidden
+  }}
+}} catch {{
+  $message = "更新安装失败：$($_.Exception.Message)"
+  $rollbackFailed = $false
+  foreach ($name in $changed) {{
+    try {{
+      $dst = Join-Path $exeDir $name
+      $original = Join-Path $backup $name
+      if (Test-Path -LiteralPath $original) {{
+        Copy-Item -LiteralPath $original -Destination $dst -Force
+      }} elseif (Test-Path -LiteralPath $dst) {{
+        Remove-Item -LiteralPath $dst -Force
+      }}
+    }} catch {{
+      $rollbackFailed = $true
+      $message += "`n恢复 $name 失败：$($_.Exception.Message)"
+    }}
+  }}
+  if ($rollbackFailed) {{
+    $message += "`n原文件保留在：$backup"
+  }} elseif ($oldExited -and -not $skipStart) {{
+    try {{
+      Start-Process -FilePath $exe -WorkingDirectory $exeDir -WindowStyle Hidden
+    }} catch {{
+      $message += "`n重新启动失败：$($_.Exception.Message)"
+    }}
+  }}
+  $message | Set-Content -LiteralPath (Join-Path $updateDir 'install-error.txt') -Encoding UTF8
+  Write-Error $message -ErrorAction Continue
+  if (-not $skipStart) {{
+    try {{
+      Add-Type -AssemblyName System.Windows.Forms
+      [System.Windows.Forms.MessageBox]::Show($message, 'YAP-XFISH 更新失败') | Out-Null
+    }} catch {{
+      Write-Error $_ -ErrorAction Continue
+    }}
+  }}
+  exit 1
 }}
+
+Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $updateDir 'update.zip') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $updateDir 'full.zip') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $updateDir 'install-error.txt') -Force -ErrorAction SilentlyContinue
 "#,
         exe_dir = quoted(exe_dir),
         stage = quoted(stage),
@@ -626,6 +689,7 @@ pub async fn install_update(State(state): State<Arc<AppState>>) -> AppResult<Jso
     let st = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(800)).await;
+        let _mutation = st.mutation.lock().await;
         if st.config.read().await.system_proxy {
             let _ = crate::system::sysproxy::disable();
         }

@@ -511,7 +511,7 @@ onBeforeUnmount(() => {
     <section class="dt-card mini">
       <div class="card-title">内存</div>
       <div class="mem-row"><span>本程序</span><b class="mono">{{ fmtBytes(info?.app_mem || 0) }}</b></div>
-      <div class="mem-row"><span>sing-box</span><b class="mono">{{ running ? fmtBytes(info?.core_mem || 0) : '—' }}</b></div>
+       <div class="mem-row"><span>Mihomo</span><b class="mono">{{ running ? fmtBytes(info?.core_mem || 0) : '—' }}</b></div>
     </section>
   </div>
 </template>

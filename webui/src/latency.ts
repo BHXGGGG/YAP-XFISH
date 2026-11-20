@@ -1,4 +1,7 @@
+import { computed } from 'vue'
 import { store } from './store'
+
+export const testingCount = computed(() => store.profile.nodes.filter((node) => node.testing).length)
 
 /** 排队时间也计入 UI 等待期限，避免大批量测速尚未完成就提前清掉状态。 */
 export function markTesting(nodes: any[]) {

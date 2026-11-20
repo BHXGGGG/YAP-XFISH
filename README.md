@@ -1,10 +1,10 @@
-# YAP-XFISH 轻量 · 便携 ·原生 Rust · 无 Electron的 Sing-box 图形客户端
+# YAP-XFISH 轻量 · 便携 · 原生 Rust · 无 Electron 的 Mihomo 图形客户端
 <img width="208" height="99" alt="图_20260722_204517_430" src="https://github.com/user-attachments/assets/8701b842-eeb4-4807-9308-aeb64a69a6d0" />
 
 
 
-Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面板 + 系统托盘。  
-绿色便携、单文件风格分发（`yap-xfish.exe` + `sing-box.exe`），数据与配置放在 exe 同目录的 `data/` 下。
+Windows 上的 **Mihomo 图形客户端**：Rust 后端 + 本地 Web 管理面板 + 系统托盘。  
+绿色便携、单文件风格分发（`yap-xfish.exe` + `mihomo.exe`），数据与配置放在 exe 同目录的 `data/` 下。
 主要目的是尽可能小的内存占用，毕竟现在内存价格上天了。
 常态内存占非常小
 学习的[UIforFreedom/UIF](https://github.com/UIforFreedom/UIF)项目，但是增加了订阅自动更新的功能。
@@ -21,14 +21,14 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 
 | 模块 | 说明 |
 |------|------|
-| 本地代理 | 启动时自动拉起 sing-box（失败不阻断面板） |
+| 本地代理 | 启动时自动拉起 Mihomo（失败不阻断面板） |
 | 管理面板 | 默认 `http://127.0.0.1:9677` |
 | 系统托盘 | 左键打开面板；右键菜单：启停 / 订阅更新 / 系统代理 / TUN / 开机启动 / 提权 / 退出 |
 | 系统代理 | 写入 Windows Internet 设置（WinINET），退出时关闭 |
 | TUN | 可选；需管理员权限 |
 | 订阅 | Clash YAML / 节点链接；默认更新周期 **6 小时** |
 | 节点 | 4 列卡片；点击选中；⚡ 测速 |
-| 测速 | 复用运行核心的 Clash delay API；按需创建临时核心，结果逐个显示 |
+| 测速 | 复用运行核心的 Mihomo delay API；按需创建临时核心，结果逐个显示 |
 | 协议 | HTTP(S) 代理 / SOCKS5 / SS / VMess / VLESS（含 REALITY + utls）/ Trojan / Hysteria2 / TUIC 等 |
 | 规则 | 全局 / 规则 / 直连；规则编辑与预设 |
 | 检查更新 | 设置页手动检查 GitHub 最新正式发布版，发现新版可前往发布页下载 |
@@ -40,6 +40,7 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 |------|------|
 | 系统代理开启 | 右上角 **亮紫色** 圆点 |
 | TUN 开启 | 左上角 **亮黄色** 圆点 |
+| 当前节点不可达 | 核心运行时每分钟检测一次，异常时图标加 **红色边框**；核心停止时暂停检测 |
 
 ### 默认端口
 
@@ -47,7 +48,7 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 |------|--------|
 | Web 管理面板 | `9677` |
 | 本地混合代理（HTTP/SOCKS） | `10020` |
-| Clash API | `9999` |
+| Mihomo API | `9999` |
 
 均可在「设置」中修改（Web 端口变更后需重启程序）。
 
@@ -68,10 +69,10 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 
 ## 快速开始（使用发布包）
 
-1. 从 [Releases](../../releases) 下载 `yap-xfish-v*-windows-amd64.zip`（或自行打包）。  
+1. 从 [Releases](../../releases) 下载 `yap-xfish-v*-mihomo-windows-amd64.zip`（或自行打包）。  
 2. 解压到任意目录，保证同目录有：
    - `yap-xfish.exe`
-   - `sing-box.exe`
+   - `mihomo.exe`
    - `README.txt`（可选）
 3. 双击 `yap-xfish.exe`（Release 为 GUI 子系统，无黑色控制台）。  
 4. 浏览器打开：`http://127.0.0.1:9677`  
@@ -82,12 +83,13 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 ```
 <解压目录>/
   yap-xfish.exe
-  sing-box.exe
-  data/                 # 配置、订阅、profile、日志、生成的 sing-box 配置
+  mihomo.exe
+  data/                 # 配置、订阅、profile、日志、生成的 Mihomo 配置
     app_config.json
     profile.json
     subscriptions.json
-    config.json         # 渲染后的 sing-box 配置
+    mihomo.yaml         # 渲染后的 Mihomo 配置
+    providers/nodes.yaml # 本地节点 Provider
 ```
 
 - 删除整个文件夹 ≈ 卸载干净。  
@@ -103,7 +105,7 @@ Windows 上的 **Sing-box 图形客户端**：Rust 后端 + 本地 Web 管理面
 - Windows 10/11 x64  
 - [Rust](https://rustup.rs/)（stable，MSVC toolchain）  
 - Node.js 18+（构建 WebUI）  
-- 一份 `sing-box.exe`（与 `yap-xfish.exe` 同目录；可从 [sing-box Releases](https://github.com/SagerNet/sing-box/releases) 获取）
+- 一份 `mihomo.exe`（与 `yap-xfish.exe` 同目录；可从 [Mihomo Releases](https://github.com/MetaCubeX/mihomo/releases) 获取）
 
 ### 构建步骤
 
@@ -122,13 +124,13 @@ cargo build --release
 # target/release/yap-xfish.exe
 ```
 
-将 `sing-box.exe` 放到 `target/release/` 后运行：
+将 `mihomo.exe` 放到 `target/release/` 后运行：
 
 ```bash
 ./target/release/yap-xfish.exe
 ```
 
-可选：用 `build_release_zip.py` 将 `release/yap-xfish.exe`、`sing-box.exe`、`README.txt` 打成 zip。
+可选：将 Mihomo 放到 `release/mihomo.exe`，再运行 `build_release_zip.py` 打包。
 
 ### 开发提示
 
@@ -150,14 +152,14 @@ cargo build --release
 ├── src/
 │   ├── main.rs             # 启动、DPI、自动开代理、系统代理恢复
 │   ├── app.rs              # AppConfig / AppState / 事件
-│   ├── config/             # 模型、读写、渲染 sing-box JSON
-│   ├── core/               # 核心进程管理（CREATE_NO_WINDOW）
+│   ├── config/             # 模型、读写、Mihomo YAML / Provider 渲染
+│   ├── core/               # Mihomo 进程与 REST/WebSocket API
 │   ├── latency/            # UIF 风格批量测速
 │   ├── server/             # Axum REST + WebSocket + 静态资源
 │   ├── subscription/       # 拉取、解析、定时更新
 │   └── system/             # 托盘、系统代理、开机启动、单实例、DPI
 ├── webui/                  # Vue 3 + Vite 管理面板
-├── release/                # 本地发布目录（勿提交 sing-box 大二进制）
+├── release/                # 本地发布目录（含 Mihomo 二进制）
 ├── build.rs                # 嵌入图标 + DPI 清单
 ├── build_release_zip.py
 └── Cargo.toml              # package name: yap-xfish
@@ -167,13 +169,14 @@ cargo build --release
 
 ## 订阅说明
 
-- 支持常见 Clash 订阅与部分分享链接。  
+- 支持 Clash/Mihomo YAML、sing-box JSON 和 SS、VMess、VLESS、Trojan、Hysteria2/hy2、AnyTLS、TUIC 分享链接。不支持的协议或关键参数会明确报错，保留旧订阅节点。
 - **名称未填**：去掉 `https://` / `http://` 后取前 **7** 个字符作为显示名。  
 - **默认更新周期**：`every6_hours`（6 小时）；可在添加订阅时改为仅手动 / 30 分钟 / 1 小时等。  
-- **更新失败**：保留上次成功的节点数和更新时间，5 分钟后自动重试；手动更新可立即重试。重试时间会保存，成功后恢复原更新周期。停用或仅手动的订阅不自动重试。
+- **更新失败**：保留上次成功的节点数和更新时间；5 分钟后进入自动重试队列，由每 30 秒扫描任务触发，手动更新可立即重试。重试时间会保存，成功后恢复原更新周期。停用或仅手动的订阅不自动重试。
 - 部分机场会拦截 UA：可在订阅设置中填写自定义 User-Agent。  
 - 「全部更新」**不会**更新 `interval = manual` 的订阅。  
 - **停用**的订阅：节点不出现在节点列表，但更新成功后 **节点数** 仍显示真实数量。
+- API 中的自定义 Cron 支持五段表达式，按本地时区和上次成功更新时间调度；兼容已保存的六/七段表达式。
 
 ---
 
@@ -181,13 +184,13 @@ cargo build --release
 
 测速通过节点访问测试网址，默认 `https://www.gstatic.com/generate_204`，超时 5 秒：
 
-1. 节点配置与正在运行的 sing-box 一致时，直接复用其 Clash `/proxies/{tag}/delay` 接口。
+1. 节点配置与正在运行的 Mihomo 一致时，复用 `/providers/proxies/YAP-NODES/{name}/healthcheck`；临时核心的内联节点使用 `/proxies/{name}/delay`。
 2. 核心未运行或节点配置尚未应用时，参考 [UIforFreedom/UIF](https://github.com/UIforFreedom/UIF) 的方式，创建临时核心，注入待测节点及其前置链路；结束后清理进程与临时文件。
 3. 普通 HTTP/SOCKS 节点直接经自身代理请求网址；带前置的节点通过核心测试完整链路。
 4. 默认并发 50，可在设置中调整为 1–200。完成一个就推送一个结果，无需等全部节点排队或超时。
-5. 仪表盘按当前订阅页签提交待测节点；重复点击不会重复测试仍在进行中的节点。
+5. 仪表盘按当前订阅页签提交待测节点；按钮右侧显示剩余待测节点数，完成后自动清除。重复点击不会重复测试仍在进行中的节点。
 
-HTTP(S) 节点会保留订阅中的用户名、密码和 TLS 配置；带认证或 TLS 的 HTTP 节点通过 sing-box 测速，普通 HTTP/SOCKS 节点走直接代理请求。
+HTTP(S) 节点会保留订阅中的用户名、密码和 TLS 配置；带认证或 TLS 的 HTTP 节点通过 Mihomo 测速，普通 HTTP/SOCKS 节点走直接代理请求。
 
 测速日志包含首个结果耗时和整批耗时，便于区分排队等待与节点本身的延迟。
 
@@ -198,9 +201,17 @@ HTTP(S) 节点会保留订阅中的用户名、密码和 TLS 配置；带认证�
 - **系统代理**：勾选后写入  
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`  
   指向 `127.0.0.1:<proxy_port>`，并通知 WinINET。  
-  **退出程序时会关闭系统代理**，避免系统仍指向已退出进程。  
-- **TUN**：写入 sing-box 配置中的 TUN inbound；未提权时会告警且可能无法创建网卡。  
+  核心就绪后启用，停止核心、启动失败或退出程序时关闭；配置中的开关保留，重新启动核心后恢复。
+- **TUN**：默认使用 `native` DNS 接管以优先兼容 Windows；选择 `hijack` 才启用完整 DNS 劫持和 `strict-route`。未提权时会告警且无法创建网卡。  
   可通过托盘「以管理员身份运行」或设置页提权。
+
+### 迁移范围限制
+
+- `geosite` / `geoip` 规则使用 Mihomo geodata；自定义 `rule_set` 没有保存来源地址，无法从旧模型转换，启动或订阅更新会明确报错。
+- Mihomo 不支持 AnyTLS + REALITY。旧 sing-box JSON 中未映射的字段或传输方式会明确报错，不会静默丢弃。
+- 链接中的 TCP、WebSocket、gRPC 传输可直接导入；Hysteria v1 链接、非零 alterId 的 VMess 链接及其他未映射链接参数需改用具备完整字段的 Mihomo YAML。
+
+全局、规则、直连三种模式均先执行用户自定义规则，再选择默认出口。控制 API 端口、密钥和核心路径变更会重启核心；订阅更新使用 Provider 刷新，主配置结构变化时热重载，保持核心进程运行。
 
 ---
 
@@ -230,20 +241,20 @@ HTTP(S) 节点会保留订阅中的用户名、密码和 TLS 配置；带认证�
 
 - **后端**：Rust, Tokio, Axum, serde, tray-icon / muda, winreg, windows-sys  
 - **前端**：Vue 3, Vite, TypeScript  
-- **内核**：sing-box（外置二进制，不随本仓库分发）
+- **内核**：Mihomo（外置二进制，不随本仓库分发）
 
 ---
 
 ## 许可证
 
 本项目采用 [MIT License](./LICENSE)（与 `Cargo.toml` 中 `license = "MIT"` 一致）。  
-`sing-box` 及其规则集遵循各自上游许可证。
+Mihomo 及其地理数据库遵循各自上游许可证。
 
 ---
 
 ## 致谢
 
-- [sing-box](https://github.com/SagerNet/sing-box)  
+- [Mihomo](https://github.com/MetaCubeX/mihomo)  
 - [UIforFreedom/UIF](https://github.com/UIforFreedom/UIF)（测速思路参考）  
 - Clash / mihomo 生态订阅与延迟 API 约定  
 - LINUX DO — 新的理想型社区 https://linux.do/

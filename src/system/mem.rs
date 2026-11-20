@@ -8,7 +8,7 @@ pub struct MemInfo {
     pub private_bytes: u64,
 }
 
-/// 指定进程（如 sing-box 子进程）的 working set 字节数，与任务管理器「内存」一致。拿不到返回 0。
+/// 指定进程（如 Mihomo 子进程）的 working set 字节数，与任务管理器「内存」一致。拿不到返回 0。
 pub fn process_working_set(pid: u32) -> u64 {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};

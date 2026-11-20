@@ -245,7 +245,7 @@ load()
       </button>
       <button @click="updateAll">↻ 全部更新</button>
       <button @click="load">⟳ 刷新列表</button>
-      <span class="hint">后台每 30 秒扫描到期订阅自动更新，失败自动回滚到上一次可用配置</span>
+      <span class="hint">后台每 30 秒扫描到期订阅并自动更新，失败时保留上一次可用配置</span>
     </div>
 
     <div v-show="showAdd" class="add-panel">

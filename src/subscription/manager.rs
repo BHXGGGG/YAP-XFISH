@@ -6,7 +6,7 @@ use crate::subscription::fetcher;
 use crate::subscription::model::{Subscription, UpdateInterval, UpdateStatus};
 use crate::subscription::parser;
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
@@ -64,7 +64,7 @@ async fn end(state: &AppState, id: &str) {
 
 // ---------------- 公共入口 ----------------
 
-/// 更新单个订阅：下载 → 解析 → 校验 → 合并 → 应用（reload 或仅写配置）→ 失败回滚。
+/// 更新单个订阅：下载 → 解析 → 合并 → 刷新 Provider → 失败回滚。
 /// 通过 WebSocket 推送进度事件（status 字段为 updating/success/failed）。
 pub async fn update_subscription(state: &AppState, id: &str) -> AppResult<()> {
     if !try_begin(state, id).await {
@@ -148,33 +148,7 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
         }
     };
 
-    // 4. 生成稳定节点 ID 并打上订阅标记（保证重复更新时选中节点稳定）
-    let mut new_nodes: Vec<Node> = parsed
-        .into_iter()
-        .map(|mut n| {
-            n.id = stable_node_id(&sub_id, &n);
-            n.subscription_id = Some(sub_id.clone());
-            n
-        })
-        .collect();
-    // 4.5 订阅内去重：某些机场会在同一 (kind, server, port) 上塞多个"占位"节点
-    // （如公告 / 套餐到期 / 备用 等共用假地址），它们的 name 不同但身份相同，
-    // 算出的 id 也会完全相同——sing-box 渲染时 `duplicate outbound/endpoint tag`
-    // FATAL 拒绝启动。这里给后续重复身份补 "-1" "-2" … 后缀，让它们成为独立节点；
-    // 真实节点（身份唯一）保持原 id，便于迁移期 id 仍然稳定。
-    {
-        let mut seen: std::collections::HashMap<(String, String, u16), u32> =
-            std::collections::HashMap::new();
-        for n in new_nodes.iter_mut() {
-            let key = (n.kind.clone(), n.server.clone(), n.port);
-            let counter = seen.entry(key).or_insert(0);
-            if *counter > 0 {
-                n.id.push('-');
-                n.id.push_str(&counter.to_string());
-            }
-            *counter += 1;
-        }
-    }
+    let mut new_nodes = parsed;
     // 解析到的实际节点数（无论订阅启用与否都要回写到 node_count）
     let parsed_count = new_nodes.len();
 
@@ -188,30 +162,17 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
         None,
     );
 
+    let _mutation = state.mutation.lock().await;
+    if !state.subscriptions.read().await.iter().any(|sub| sub.id == sub_id && sub.url == sub_url && sub.user_agent == sub_ua) {
+        return Err(anyhow::anyhow!("订阅在下载期间已被删除或修改，请重新更新").into());
+    }
     // 5. 合并进 profile：先快照，再移除旧节点、追加新节点、保证选中有效。
     // 保留旧节点上的本地 detour（链式前置），避免订阅刷新冲掉用户配置的链路。
     let snapshot = {
         let mut p = state.profile.write().await;
         let snap = p.clone();
-        let old_detours: std::collections::HashMap<String, String> = p
-            .nodes
-            .iter()
-            .filter(|n| n.subscription_id.as_deref() == Some(id))
-            .filter_map(|n| {
-                n.detour
-                    .as_ref()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .map(|d| (n.id.clone(), d))
-            })
-            .collect();
+        assign_node_ids(&sub_id, &mut new_nodes, &p.nodes);
         p.nodes.retain(|n| n.subscription_id.as_deref() != Some(id));
-        for n in new_nodes.iter_mut() {
-            if let Some(d) = old_detours.get(&n.id) {
-                // 目标可能仍是本订阅内其它节点，或其它订阅/手动节点；存在性在 render 时再校验
-                n.detour = Some(d.clone());
-            }
-        }
         p.nodes.append(&mut new_nodes);
         ensure_selection(&mut p);
         if let Err(e) = cfgmgr::save_profile(&state.data_dir, &p) {
@@ -224,18 +185,17 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
         snap
     };
 
-    emit(state, &sub_id, "updating", 80, "应用配置并重启核心", None, None);
+    emit(state, &sub_id, "updating", 80, "刷新 Mihomo Proxy Provider", None, None);
 
-    // 6. 应用：核心在运行时 reload（带配置回滚），未运行时仅写配置待下次启动。
+    // 6. 更新运行中的 file provider，不重启 Mihomo。
     // 注意：运行时配置用 visible_profile（排除停用订阅节点），但 node_count 必须
     // 用解析到的实际节点数 / 完整 profile 统计——否则「全部更新」停用订阅时会写成 0。
     let app_cfg = state.config.read().await.clone();
     let profile_now = state.visible_profile().await;
     let running = state.core.is_running().await;
 
-    // reload_safe 内部会判断：只有节点连接参数 / 规则等实质变化才重启核心。
     let apply_result = if running {
-        state.core.reload_safe(&profile_now, &app_cfg).await
+        state.core.update_provider(&profile_now, &app_cfg).await
     } else {
         state.core.write_config_only(&profile_now, &app_cfg).await
     };
@@ -253,6 +213,16 @@ async fn update_subscription_inner(state: &AppState, id: &str) -> AppResult<()> 
                 }
             };
             record(state, &sub_id, UpdateStatus::Success, cnt, "更新成功").await;
+            {
+                let mut status = state.status.write().await;
+                status.mode = profile_now.mode;
+                status.current_node = profile_now.selected_node.clone();
+                state.emit(AppEvent::Status {
+                    running: status.running,
+                    mode: status.mode,
+                    current_node: status.current_node.clone(),
+                });
+            }
             // 实时推送最新节点列表，前端无需刷新即可看到订阅拉取的节点。
             state.broadcast_profile().await;
             Ok(())
@@ -371,13 +341,35 @@ fn ensure_selection(p: &mut AppProfile) {
     }
 }
 
-/// 由「订阅 ID + 节点身份」生成稳定的节点 ID，使重复更新时选中不丢。
-///
-/// 注意：hash key 包含 `name`，但**重复更新时 name 通常不变**（机场只是偶尔在
-/// 节点名里塞剩余流量/到期等可变字段，导致订阅刷新后 id 漂移）。本函数在调用
-/// 之前由「订阅内冲突去重」负责把同一 (kind, server, port) 的多个节点补上不同
-/// 序号后缀（参见 `update_subscription_inner`），因此正常情况下 name 改变也
-/// 不会让 id 漂移；本函数只承担最后一道身份计算 + 兜底。
+fn assign_node_ids(sub_id: &str, nodes: &mut [Node], previous: &[Node]) {
+    let mut old = HashMap::<_, VecDeque<&Node>>::new();
+    for node in previous.iter().filter(|node| node.subscription_id.as_deref() == Some(sub_id)) {
+        old.entry((node.kind.as_str(), node.server.as_str(), node.port, node.name.as_str()))
+            .or_default().push_back(node);
+    }
+    // 保留已有 ID，避免订阅重排改变选中节点、规则和链式引用。
+    let mut used: HashSet<String> = previous.iter().map(|node| node.id.clone()).collect();
+    for node in nodes {
+        node.subscription_id = Some(sub_id.to_string());
+        if let Some(prior) = old
+            .get_mut(&(node.kind.as_str(), node.server.as_str(), node.port, node.name.as_str()))
+            .and_then(VecDeque::pop_front)
+        {
+            node.id = prior.id.clone();
+            node.detour = prior.detour.clone();
+        } else {
+            let base = stable_node_id(sub_id, node);
+            node.id = base.clone();
+            let mut suffix = 0;
+            while !used.insert(node.id.clone()) {
+                suffix += 1;
+                node.id = format!("{base}-{suffix}");
+            }
+        }
+    }
+}
+
+/// 节点身份包含名称，以区分共用服务器地址的不同线路。
 fn stable_node_id(sub_id: &str, n: &Node) -> String {
     let mut h = DefaultHasher::new();
     let key = format!("{}-{}-{}-{}", n.kind, n.server, n.port, n.name);

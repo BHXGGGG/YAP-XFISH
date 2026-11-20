@@ -36,7 +36,7 @@ export interface UpdateCheckResult {
   release_url: string
   /** 仅含程序文件的更新包（自动更新默认下载它） */
   update_asset?: UpdateAssetInfo | null
-  /** 含 sing-box 的完整包 */
+  /** 含 Mihomo 的完整包 */
   full_asset?: UpdateAssetInfo | null
 }
 
@@ -45,7 +45,7 @@ export interface UpdateProgress {
   downloaded: number
   total: number
   version: string | null
-  includes_singbox: boolean
+  includes_mihomo: boolean
   error: string | null
 }
 

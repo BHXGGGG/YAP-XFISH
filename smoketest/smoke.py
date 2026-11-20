@@ -1,7 +1,7 @@
 import os, sys, json, time, subprocess, urllib.request, urllib.error, socket, asyncio, signal
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, "target", "release", "proxy-rs.exe")
+EXE = os.path.join(ROOT, "release", "yap-xfish.exe")
 TMP = os.path.join(ROOT, "smoketest", "data")
 WEB = 19091
 CLASH = 19090
@@ -38,7 +38,7 @@ def seed():
     os.makedirs(TMP, exist_ok=True)
     cfg = {
         "web_port": WEB,
-        "core_binary": os.path.join(ROOT, "target", "release", "sing-box.exe"),
+        "core_binary": os.path.join(ROOT, "release", "mihomo.exe"),
         "data_dir": TMP,
         "clash_api_port": CLASH,
         "proxy_port": PROXY,
@@ -158,7 +158,7 @@ def main():
         ok("便携数据目录 profile.json", have("profile.json"))
         ok("便携数据目录 subscriptions.json", have("subscriptions.json"))
 
-        # core start -> config.json written in portable dir + proxy binds
+        # Core start -> Mihomo YAML and provider are written in the portable data dir.
         st, _ = http("POST", "/api/core/start")
         core_ok = False
         for _ in range(20):
@@ -168,12 +168,12 @@ def main():
                 break
             time.sleep(0.5)
         ok("核心启动并监听代理端口(便携目录)", core_ok)
-        ok("config.json 写入便携目录", have("config.json"))
-        if have("config.json"):
-            with open(os.path.join(TMP, "config.json")) as f:
-                cc = json.load(f)
-            lp = cc.get("inbounds", [{}])[0].get("listen_port")
-            ok("config.json 代理端口=18990(可配/便携)", lp == PROXY, f"listen_port={lp}")
+        ok("mihomo.yaml 写入便携目录", have("mihomo.yaml"))
+        ok("Provider 节点文件写入便携目录", have(os.path.join("providers", "nodes.yaml")))
+        if have("mihomo.yaml"):
+            with open(os.path.join(TMP, "mihomo.yaml"), encoding="utf-8") as f:
+                config = f.read()
+            ok("Mihomo mixed-port=18990(可配/便携)", f"mixed-port: {PROXY}" in config)
         http("POST", "/api/core/stop")
     finally:
         try: proc.terminate()

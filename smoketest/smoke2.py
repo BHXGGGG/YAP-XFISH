@@ -2,7 +2,7 @@
 """验证第四轮修复：
 1) 全新配置默认 proxy_port == 10020（不再是 7890）。
 2) 核心路径随文件夹移动：即使 app_config.json 里 core_binary 指向一个不存在的旧绝对路径，
-   核心仍能启动（resolve_core_binary 回退到 exe 同目录的 sing-box.exe）。
+   核心仍能启动（回退到 exe 同目录的 mihomo.exe）。
 """
 import json
 import os
@@ -17,8 +17,8 @@ import asyncio
 import websockets  # noqa: F401  (venv 已装)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, "target", "release", "proxy-rs.exe")
-SINGBOX = os.path.join(ROOT, "target", "release", "sing-box.exe")
+EXE = os.path.join(ROOT, "release", "yap-xfish.exe")
+MIHOMO = os.path.join(ROOT, "release", "mihomo.exe")
 
 results = []
 
@@ -77,7 +77,11 @@ async def capture_ws_logs(port, secs=4):
         print(f"  [ws-log] connect err {e}")
 
 
-def stop_exe(proc):
+def stop_exe(proc, port):
+    try:
+        http_json(port, "/api/core/stop", method="POST")
+    except Exception:
+        pass
     try:
         proc.terminate()
     except Exception:
@@ -85,20 +89,18 @@ def stop_exe(proc):
     try:
         proc.wait(timeout=5)
     except Exception:
-        pass
-    # 始终清理核心子进程，避免占用端口影响后续场景
-    subprocess.run(["taskkill", "/F", "/IM", "proxy-rs.exe"], capture_output=True)
-    subprocess.run(["taskkill", "/F", "/IM", "sing-box.exe"], capture_output=True)
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
 
 
 # ---------- 场景 1：全新配置默认 proxy_port = 10020 ----------
 def test_default_port():
-    d = tempfile.mkdtemp(prefix="prs_def_")
+    os.makedirs(os.path.join(ROOT, "target"), exist_ok=True)
+    d = tempfile.mkdtemp(prefix="prs_def_", dir=os.path.join(ROOT, "target"))
     port = 19527
     # 写入完整配置，但【故意省略 proxy_port】，验证 serde 默认值生效（应为 10020）。
     cfg = {
         "web_port": port,
-        "core_binary": r"C:\__proxy_rs_nonexistent__\sing-box.exe",
+        "core_binary": r"C:\__proxy_rs_nonexistent__\mihomo.exe",
         "data_dir": d,
         "clash_api_port": 19099,
         "api_secret": "testsecret",
@@ -121,35 +123,34 @@ def test_default_port():
             check("场景1: Web 服务启动", False, "web 未启动")
             return
         check("场景1: Web 服务启动", True)
-        # 启动核心，让渲染出的 config.json 反映内存中的 proxy_port（默认值 10020）。
+        # 启动核心，让生成的 Mihomo YAML 反映默认 proxy_port。
         try:
             http_json(port, "/api/core/start", method="POST")
             time.sleep(3.0)
         except Exception as e:
             print(f"  [diag] core/start err: {e}")
-        cfg_json = os.path.join(d, "config.json")
-        if os.path.exists(cfg_json):
-            with open(cfg_json) as f:
-                rc = json.load(f)
-            lp = [i.get("listen_port") for i in rc.get("inbounds", [])
-                  if i.get("type") == "mixed"]
+        mihomo_yaml = os.path.join(d, "mihomo.yaml")
+        if os.path.exists(mihomo_yaml):
+            with open(mihomo_yaml, encoding="utf-8") as f:
+                yaml = f.read()
             check("场景1: 默认 proxy_port == 10020（渲染入站端口）",
-                  lp and lp[0] == 10020, f"mixed listen_port={lp}")
+                  "mixed-port: 10020" in yaml, "mixed-port 应为 10020")
         else:
-            check("场景1: 渲染 config.json 存在", False)
+            check("场景1: 渲染 mihomo.yaml 存在", False)
     finally:
-        stop_exe(proc)
+        stop_exe(proc, port)
 
 
 # ---------- 场景 2：core_binary 指向不存在的旧路径，核心仍能启动 ----------
 def test_stale_core_binary():
-    d = tempfile.mkdtemp(prefix="prs_stale_")
+    os.makedirs(os.path.join(ROOT, "target"), exist_ok=True)
+    d = tempfile.mkdtemp(prefix="prs_stale_", dir=os.path.join(ROOT, "target"))
     port = 19528
     pproxy = 18990
     pclash = 19099
     cfg = {
         "web_port": port,
-        "core_binary": r"C:\__proxy_rs_nonexistent_old_location__\sing-box.exe",
+        "core_binary": r"C:\__proxy_rs_nonexistent_old_location__\mihomo.exe",
         "data_dir": d,
         "clash_api_port": pclash,
         "proxy_port": pproxy,
@@ -181,12 +182,12 @@ def test_stale_core_binary():
         # 关键：core_binary 指向不存在路径，核心应回退到 exe 同目录并启动
         r = http_json(port, "/api/core/start", method="POST")
         time.sleep(2.0)
-        # 捕获 sing-box 实际运行日志（确认是否绑定成功或有 FATAL）
+        # 捕获 Mihomo 实际运行日志。
         asyncio.run(capture_ws_logs(port, 5))
         st = http_json(port, "/api/status")
         check("场景2: 核心启动成功（绕过失效路径）", st.get("running") is True,
               f"running={st.get('running')}")
-        # 重试探测端口（sing-box 绑定可能需要几秒）
+        # 重试探测本地代理端口。
         listening = False
         for _ in range(24):
             if port_listening(pproxy):
@@ -195,14 +196,14 @@ def test_stale_core_binary():
             time.sleep(0.5)
         check("场景2: 代理端口监听 (无黑框启动)", listening,
               f"port {pproxy} listening={listening}")
-        # 诊断：sing-box check 校验渲染配置是否合法
-        cj = os.path.join(d, "config.json")
-        if os.path.exists(cj):
+        # 诊断：Mihomo 校验渲染配置是否合法
+        yaml_path = os.path.join(d, "mihomo.yaml")
+        if os.path.exists(yaml_path):
             try:
-                chk = subprocess.run([SINGBOX, "check", "-c", cj],
+                chk = subprocess.run([MIHOMO, "-t", "-d", d, "-f", yaml_path],
                                      capture_output=True, encoding="oem",
                                      errors="ignore", timeout=15)
-                print(f"  [diag] sing-box check rc={chk.returncode}")
+                print(f"  [diag] Mihomo config check rc={chk.returncode}")
                 print(f"  [diag] check stdout: {chk.stdout.strip()[-500:]}")
                 print(f"  [diag] check stderr: {chk.stderr.strip()[-500:]}")
             except Exception as e:
@@ -217,25 +218,19 @@ def test_stale_core_binary():
             print(f"  [diag] netstat :{pproxy} -> {lines}")
         except Exception as e:
             print(f"  [diag] netstat err {e}")
-        cfg_json = os.path.join(d, "config.json")
-        if os.path.exists(cfg_json):
-            with open(cfg_json) as f:
-                rc = json.load(f)
-            ins = rc.get("inbounds", [])
-            for i in ins:
-                if i.get("type") == "mixed":
-                    print(f"  [diag] mixed inbound listen={i.get('listen')!r} "
-                          f"listen_port={i.get('listen_port')}")
+        if os.path.exists(yaml_path):
+            with open(yaml_path, encoding="utf-8") as f:
+                print(f"  [diag] Mihomo YAML: {f.read()[-500:]}")
     finally:
-        stop_exe(proc)
+        stop_exe(proc, port)
 
 
 if __name__ == "__main__":
     if not os.path.exists(EXE):
         print("EXE 不存在，请先 cargo build --release")
         sys.exit(2)
-    if not os.path.exists(SINGBOX):
-        print("sing-box.exe 不在 target/release，请先放置")
+    if not os.path.exists(MIHOMO):
+        print("mihomo.exe 不在 release，请先运行 build_release_zip.py")
         sys.exit(2)
     test_default_port()
     test_stale_core_binary()

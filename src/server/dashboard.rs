@@ -1,6 +1,6 @@
 //! 仪表盘信息：运行时长 / 内网 IP / 内存、出口 IP 与 IP 质量、服务延迟。
 //!
-//! 出口 IP 的做法与 FlClash 相同：请求经本机代理端口（sing-box mixed 入站）发出，
+//! 出口 IP 的做法与 FlClash 相同：请求经本机代理端口（Mihomo mixed 入站）发出，
 //! 走当前模式与选中节点，查到的就是实际出口。IP 质量再用该 IP 查公开情报接口，
 //! 判定规则照搬 FlClash（lib/common/ip_quality.dart、lib/models/ip_quality.dart）。
 

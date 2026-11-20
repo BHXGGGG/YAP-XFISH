@@ -23,7 +23,7 @@ import urllib.request
 import websockets  # type: ignore
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, "target", "release", "proxy-rs.exe")
+EXE = os.path.join(ROOT, "release", "yap-xfish.exe")
 VENV = "C:/Users/lo2/.workbuddy/binaries/python/envs/default"
 PY = os.path.join(VENV, "Scripts", "python.exe")
 
@@ -114,7 +114,7 @@ async def main():
     web_port = free_port()
     test_port = free_port()
     srv = start_test_server(test_port)
-    d = tempfile.mkdtemp(prefix="prs_s3_")
+    d = tempfile.mkdtemp(prefix="prs_s3_", dir=os.path.join(ROOT, "target"))
     env = dict(os.environ, PROXY_RS_DATA_DIR=d,
                # 让 web 端口避开占用
                )
@@ -196,13 +196,17 @@ async def main():
         task.cancel()
     finally:
         try:
+            http_json(web_port, "/api/core/stop", method="POST")
+        except Exception:
+            pass
+        try:
             proc.terminate()
         except Exception:
             pass
         try:
             proc.wait(timeout=5)
         except Exception:
-            subprocess.run(["taskkill", "/F", "/IM", "proxy-rs.exe"], capture_output=True)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
         srv.shutdown()
         shutil.rmtree(d, ignore_errors=True)
 

@@ -84,8 +84,8 @@ async function clearAll() {
   <section>
     <h2>链式代理</h2>
     <p class="hint">
-      为「出口节点」指定一个「前置节点」：拨号出口时先经前置再连出口（sing-box
-      <code>detour</code>）。
+      为「出口节点」指定一个「前置节点」：拨号出口时先经前置再连出口（Mihomo
+      <code>dialer-proxy</code>）。
       <br />
       <b>注意：</b>Hysteria2 / TUIC / WireGuard 等 UDP/QUIC 出口无法经前置链式，请用
       VLESS / VMess / Trojan / SS 等 TCP 出口。

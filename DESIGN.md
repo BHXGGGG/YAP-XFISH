@@ -1,6 +1,6 @@
 ---
 name: YAP-XFISH
-description: 原生 Rust 内核、浏览器当界面的 Windows sing-box 客户端
+description: 原生 Rust 后端、浏览器当界面的 Windows Mihomo 客户端
 colors:
   primary: "#2563eb"
   primary-bright: "#3b82f6"

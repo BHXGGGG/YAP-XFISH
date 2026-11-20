@@ -29,7 +29,7 @@ let timer: number | null = null
 // 上一轮每条连接的累计字节，用来算实时速度
 let prev = new Map<string, { up: number; down: number; t: number }>()
 
-// sing-box 出站 tag 就是节点 id，显示成节点名
+ // Mihomo proxy names use stable node ids; display the profile name.
 const nodeNameById = computed(() => {
   const m = new Map<string, string>()
   for (const n of store.profile.nodes || []) m.set(n.id, n.name)

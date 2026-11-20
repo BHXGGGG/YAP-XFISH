@@ -50,21 +50,22 @@ pub fn save_profile(data_dir: &Path, p: &AppProfile) -> AppResult<()> {
     Ok(())
 }
 
-/// 备份当前 sing-box 配置文件，返回备份路径（供订阅更新失败回滚使用）。
+/// Back up the current generated core config before replacing it.
 ///
-/// 同时在同目录维护滚动备份：仅保留最近 3 个 `config.backup.<ts>.json`，
-/// 超出时按时间戳（文件名）升序删除最旧的。
+/// Keep the three newest backups beside the active config.
 pub fn backup_config(config_path: &Path) -> AppResult<Option<std::path::PathBuf>> {
     const MAX_BACKUPS: usize = 3;
-    const BACKUP_PREFIX: &str = "config.backup.";
-    const BACKUP_SUFFIX: &str = ".json";
 
     if !config_path.exists() {
         return Ok(None);
     }
+    let stem = config_path.file_stem().and_then(|s| s.to_str()).unwrap_or("config");
+    let extension = config_path.extension().and_then(|s| s.to_str()).unwrap_or("bak");
+    let backup_prefix = format!("{stem}.backup.");
+    let backup_suffix = format!(".{extension}");
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let backup = config_path
-        .with_file_name(format!("config.backup.{}.json", ts));
+        .with_file_name(format!("{backup_prefix}{ts}{backup_suffix}"));
     std::fs::copy(config_path, &backup)?;
 
     if let Some(parent) = config_path.parent() {
@@ -74,7 +75,7 @@ pub fn backup_config(config_path: &Path) -> AppResult<Option<std::path::PathBuf>
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with(BACKUP_PREFIX) && n.ends_with(BACKUP_SUFFIX))
+                    .map(|n| n.starts_with(&backup_prefix) && n.ends_with(&backup_suffix))
                     .unwrap_or(false)
             })
             .collect();
@@ -86,4 +87,24 @@ pub fn backup_config(config_path: &Path) -> AppResult<Option<std::path::PathBuf>
     }
 
     Ok(Some(backup))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backup_uses_the_active_config_extension() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("backup-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mihomo.yaml");
+        std::fs::write(&path, "mode: rule\n").unwrap();
+        let backup = backup_config(&path).unwrap().unwrap();
+        assert!(backup.file_name().unwrap().to_string_lossy().starts_with("mihomo.backup."));
+        assert_eq!(backup.extension().and_then(|s| s.to_str()), Some("yaml"));
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), "mode: rule\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

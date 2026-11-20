@@ -61,7 +61,7 @@ proxy_rs.pdb
 *.pdb
 
 # ===== 大型可执行产物 =====
-# sing-box 是第三方内核二进制（约 40MB+），不入库；用时放到 exe 同目录即可
+# Mihomo 是第三方内核二进制，不入库；发布包会附带该文件
 /release/sing-box.exe
 /release/**/sing-box.exe
 # 发布 zip / 本地 exe 不入库（发布走 GitHub Releases 附件）
@@ -69,7 +69,7 @@ proxy_rs.pdb
 /release/*.exe
 /release/**/*.exe
 /release/**/*.dll
-# 更新包清单由 build_release_zip.py 按当前 sing-box 生成
+# 更新包清单由 build_release_zip.py 按当前 Mihomo 生成
 /release/update.json
 
 # ===== Hermes 本地会话/计划（不属于仓库） =====

@@ -8,7 +8,7 @@ web
 
 ## Users
 
-**主要用户：中文 Windows 用户，需要在本机跑 sing-box 上外网。**
+**主要用户：中文 Windows 用户，需要在本机运行 Mihomo 代理。**
 
 公开产品，任何 Windows 用户都可能下载使用，因此用户分两拨，必须同时服务：
 
@@ -19,9 +19,9 @@ web
 
 ## Product Purpose
 
-Windows 上的 sing-box 图形客户端：Rust 后端 + 本地 Web 管理面板 + 系统托盘。
+Windows 上的 Mihomo 图形客户端：Rust 后端 + 本地 Web 管理面板 + 系统托盘。
 
-存在的理由很具体：**替掉 Electron 系客户端的内存开销**。启动即拉起 sing-box，面板默认在 `http://127.0.0.1:9677`，托盘常驻。发布形态是 `yap-xfish.exe` + `sing-box.exe` 两个文件加一个 `data/` 目录，绿色便携，删目录即卸载。
+存在的理由很具体：**替掉 Electron 系客户端的内存开销**。启动即拉起 Mihomo，面板默认在 `http://127.0.0.1:9677`，托盘常驻。发布形态是 `yap-xfish.exe` + `mihomo.exe` 两个文件加一个 `data/` 目录，绿色便携，删目录即卸载。
 
 ## Positioning
 
@@ -37,14 +37,14 @@ Windows 上的 sing-box 图形客户端：Rust 后端 + 本地 Web 管理面板 
 - **使用场景是观察型**：用户会打开看实时延迟、30 天流量、日志。仪表盘是主面板，不是欢迎页。
 - 典型进场状态是"带着一个机场订阅链接来的"，机场可能拦非浏览器 UA。
 - TUN 需要管理员权限，未提权时会告警 —— 这是常态路径，不是异常路径。
-- 数据目录 `<exe 同目录>/data/` 就是整个应用状态：`app_config.json`、`profile.json`、`subscriptions.json`、渲染出的 `config.json`、日志。移动目录即迁移。
+- 数据目录 `<exe 同目录>/data/` 就是整个应用状态：`app_config.json`、`profile.json`、`subscriptions.json`、渲染出的 `mihomo.yaml` 与 Proxy Provider、日志。移动目录即迁移。
 - 同一台机器只能跑一个实例（命名互斥锁 `YapXfish_SingleInstance_Mutex`），与数据目录无关。
 
 ## Capabilities and Constraints
 
 **界面模块**（`webui/src/views/`）：仪表盘、订阅管理、路由规则、链式代理、设置、实时日志。侧栏常驻：连接状态 + 当日与 30 天流量。
 
-**已确认能力**：本地代理启停；订阅增删改与定时更新（manual / 30 分钟 / 1 小时 / 6 小时）；节点卡片选中；批量测速（复用运行核心的 Clash delay API，核心未运行时创建临时核心）；规则编辑与预设；模式切换（全局 / 规则 / 直连）；链式代理前置（detour）；系统代理（写 WinINET，退出时关闭）；TUN；开机启动；检查 GitHub 更新。
+**已确认能力**：本地代理启停；订阅增删改与定时更新（manual / 30 分钟 / 1 小时 / 6 小时）；节点卡片选中；批量测速（复用运行核心的 Mihomo delay API，核心未运行时创建临时核心）；规则编辑与预设；模式切换（全局 / 规则 / 直连）；链式代理前置（`dialer-proxy`）；Proxy Provider 订阅更新；系统代理（写 WinINET，退出时关闭）；TUN（DNS 接管可选 native / hijack）；开机启动；检查 GitHub 更新。
 
 **协议**：HTTP(S) 代理 / SOCKS5 / SS / VMess / VLESS（含 REALITY + utls）/ Trojan / Hysteria2 / TUIC。
 
@@ -66,12 +66,12 @@ Windows 上的 sing-box 图形客户端：Rust 后端 + 本地 Web 管理面板 
 - **托盘状态点颜色是既定约定**：系统代理开启 = 右上亮紫色圆点；TUN 开启 = 左上亮黄色圆点。
 - **图标资产**：`assets/app.ico`、`assets/tray_32.rgba`（X-FISH 32×32 托盘底图）。
 - **既定口号**（README）：「少占一截内存，多留一截流畅。」「把重量留给线路，不留给壳子。」
-- **许可**：MIT。sing-box 为外置二进制，不随仓库分发。
+- **许可**：MIT。Mihomo 是第三方核心，发布包附带二进制，仓库源码不包含核心文件。
 
 ## Evidence on Hand
 
 - `README.md`：完整功能表、端口表、数据目录说明、订阅与测速规则、系统代理与 TUN 行为、FAQ、构建步骤。这是产品事实的主要来源。
-- `release/`：v0.1.22 起的多个历史发布包（当前 `Cargo.toml` 版本 0.1.44），可提取真实版本演进。
+- `release/README.txt`：当前 Mihomo 版的安装说明、迁移限制和使用信息；`Cargo.toml` 记录当前版本。
 - `design/`：订阅页的静态 HTML 原型（`subscriptions.html`、`subscriptions-expanded.html`）与截图，未纳入 git。属探索稿，不是权威视觉规范。
 - `assets/`：应用图标、DPI manifest、托盘底图。
 

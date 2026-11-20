@@ -1,6 +1,5 @@
 //! 进程内累计流量 + 瞬时速率：每秒轮询 Clash `GET /connections`，**只统计走代理的连接**。
 //!
-//! - `/traffic` 在 sing-box 上是 NDJSON 流，不适合一次性 JSON 解析。
 //! - 按连接 id 记住上次累计字节，出口为 direct / block 的连接不计入（见 `traffic.rs`）。
 //! - 本 poller 用「相对上次采样的增量」写入累计，并在 INTERVAL=1s 时把增量当作 B/s。
 //! - **start/stop/restart 均不清零累计**；停止时速率置 0。
@@ -114,6 +113,10 @@ pub fn start(state: Arc<AppState>) {
 /// 核心意外退出：状态置停止 → 关闭系统代理（否则系统仍指向无人监听的端口，断网）
 /// → 配置错误时弹窗提示。
 async fn on_core_crashed(state: &AppState) {
+    let _mutation = state.mutation.lock().await;
+    if state.core.is_running().await {
+        return;
+    }
     let (mode, current_node) = {
         let mut st = state.status.write().await;
         st.running = false;
@@ -124,7 +127,7 @@ async fn on_core_crashed(state: &AppState) {
         "core",
         "error",
         format!(
-            "sing-box 核心意外退出，状态已置为停止。原因: {}",
+            "Mihomo 核心意外退出，状态已置为停止。原因: {}",
             fatal.as_deref().unwrap_or("未捕获到 FATAL 输出")
         ),
     );
@@ -153,7 +156,7 @@ async fn on_core_crashed(state: &AppState) {
         crate::system::msgbox::show_error(
             "YAP-XFISH — 核心因配置错误退出",
             &format!(
-                "sing-box 核心因配置错误退出，代理已停止，系统代理已关闭。\n\n{f}\n\n请检查节点 / 规则 / 设置后在面板中重新启动。"
+                "Mihomo 核心因配置错误退出，代理已停止，系统代理已关闭。\n\n{f}\n\n请检查节点 / 规则 / 设置后在面板中重新启动。"
             ),
         );
     }

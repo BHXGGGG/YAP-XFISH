@@ -11,7 +11,7 @@ use serde_json::Value;
 /// 3. v2rayN 风格：base64 编码后的链接集合（每行一个 `scheme://...`）
 /// 4. 直接是 `scheme://...` 链接集合（每行一个）
 ///
-/// 任何节点缺失关键字段（server / port）都会被跳过，不会中断整体解析。
+/// 无法识别的节点或参数会拒绝整次导入，保留已有订阅。
 pub fn parse(content: &str) -> AppResult<Vec<Node>> {
     parse_inner(content, 0)
 }
@@ -24,34 +24,20 @@ fn parse_inner(content: &str, depth: usize) -> AppResult<Vec<Node>> {
 
     // 1) JSON（sing-box 配置 或 clash 风格节点数组）
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-            let nodes = parse_json_value(&v);
-            if !nodes.is_empty() {
-                return Ok(nodes);
-            }
-        }
+        let value = serde_json::from_str::<Value>(trimmed)?;
+        return parse_json_value(&value);
     }
 
     // 2) Clash YAML
     if trimmed.starts_with("proxies:") || trimmed.contains("\nproxies:") {
-        if let Ok(yaml) = serde_yaml::from_str::<Value>(trimmed) {
-            if let Some(proxies) = yaml.get("proxies").and_then(|p| p.as_array()) {
-                let nodes: Vec<Node> = proxies.iter().filter_map(parse_clash_proxy).collect();
-                if !nodes.is_empty() {
-                    return Ok(nodes);
-                }
-            }
-        }
+        let yaml = serde_yaml::from_str::<Value>(trimmed).map_err(anyhow::Error::from)?;
+        return parse_json_value(&yaml);
     }
 
     // 3) base64 包裹的链接 / 配置（仅第一层尝试，防止无限递归）
     if depth < 1 {
         if let Some(decoded) = try_base64_decode(trimmed) {
-            if let Ok(nodes) = parse_inner(&decoded, depth + 1) {
-                if !nodes.is_empty() {
-                    return Ok(nodes);
-                }
-            }
+            return parse_inner(&decoded, depth + 1);
         }
     }
 
@@ -62,9 +48,7 @@ fn parse_inner(content: &str, depth: usize) -> AppResult<Vec<Node>> {
         if line.is_empty() {
             continue;
         }
-        if let Some(node) = parse_link(line) {
-            nodes.push(node);
-        }
+        nodes.push(parse_link(line)?);
     }
     if nodes.is_empty() {
         return Err(AppError(anyhow::anyhow!(
@@ -74,32 +58,36 @@ fn parse_inner(content: &str, depth: usize) -> AppResult<Vec<Node>> {
     Ok(nodes)
 }
 
-fn parse_json_value(v: &Value) -> Vec<Node> {
+fn parse_json_value(v: &Value) -> AppResult<Vec<Node>> {
     if let Some(obj) = v.as_object() {
         if let Some(outbounds) = obj.get("outbounds").and_then(|o| o.as_array()) {
-            return outbounds.iter().filter_map(parse_singbox_outbound).collect();
+            return outbounds.iter().filter(|item| !matches!(item["type"].as_str(), Some("direct" | "block" | "dns" | "selector" | "urltest")))
+                .enumerate().map(|(index, item)| require_node(parse_singbox_outbound(item), item, index)).collect();
         }
         if let Some(proxies) = obj.get("proxies").and_then(|p| p.as_array()) {
-            return proxies.iter().filter_map(parse_clash_proxy).collect();
+            return proxies.iter().enumerate().map(|(index, item)| require_node(parse_clash_proxy(item), item, index)).collect();
         }
-        return Vec::new();
+        return Err(anyhow::anyhow!("订阅 JSON/YAML 缺少 outbounds 或 proxies 列表").into());
     }
     if let Some(arr) = v.as_array() {
         let mut nodes = Vec::new();
-        for item in arr {
+        for (index, item) in arr.iter().enumerate() {
             if let Some(_o) = item.as_object() {
-                if let Some(n) = parse_clash_proxy(item) {
-                    nodes.push(n);
-                }
+                nodes.push(require_node(parse_clash_proxy(item), item, index)?);
             } else if let Some(s) = item.as_str() {
-                if let Some(n) = parse_link(s) {
-                    nodes.push(n);
-                }
+                nodes.push(parse_link(s)?);
+            } else {
+                return Err(anyhow::anyhow!("第 {} 个订阅节点不是对象或链接", index + 1).into());
             }
         }
-        return nodes;
+        return Ok(nodes);
     }
-    Vec::new()
+    Err(anyhow::anyhow!("订阅内容不是节点列表").into())
+}
+
+fn require_node(node: Option<Node>, raw: &Value, index: usize) -> AppResult<Node> {
+    node.ok_or_else(|| anyhow::anyhow!("第 {} 个节点（{}）缺少有效的协议、服务器或端口", index + 1,
+        raw.get("name").or_else(|| raw.get("tag")).and_then(Value::as_str).unwrap_or("未命名")).into())
 }
 
 // ---------------- sing-box outbound ----------------
@@ -112,7 +100,7 @@ fn parse_singbox_outbound(v: &Value) -> Option<Node> {
         .unwrap_or("node")
         .to_string();
     let server = v.get("server")?.as_str()?.to_string();
-    let port = v.get("server_port").and_then(|p| p.as_u64())? as u16;
+    let port = u16::try_from(v.get("server_port")?.as_u64()?).ok().filter(|port| *port > 0)?;
 
     let mut node = Node {
         id: String::new(),
@@ -196,7 +184,7 @@ fn parse_clash_proxy(v: &Value) -> Option<Node> {
         .unwrap_or("node")
         .to_string();
     let server = v.get("server")?.as_str()?.to_string();
-    let port = v.get("port")?.as_u64()? as u16;
+    let port = u16::try_from(v.get("port")?.as_u64()?).ok().filter(|port| *port > 0)?;
 
     let mut node = Node {
         id: String::new(),
@@ -273,10 +261,8 @@ fn parse_clash_proxy(v: &Value) -> Option<Node> {
         }
         _ => {}
     }
-    // Clash 订阅的字段已完整映射到 Node 结构；不再把整段 Clash JSON 透传进 extra，
-    // 否则 `name`/`ws-opts`/`cipher` 等 Clash 专有字段会被渲染进 sing-box outbound，
-    // 导致 1.13 因 unknown field 而 FATAL 拒绝启动。
-    node.extra = None;
+    // 保留原始 Clash 字段，供 Mihomo Provider 渲染保留协议扩展项。
+    node.extra = Some(v.clone());
     Some(node)
 }
 
@@ -379,33 +365,40 @@ fn maybe_clash_ws(node: &mut Node, v: &Value) {
 
 // ---------------- scheme:// 链接 ----------------
 
-fn parse_link(line: &str) -> Option<Node> {
-    if let Some(rest) = line.strip_prefix("ss://") {
-        return parse_ss(rest);
+fn parse_link(line: &str) -> AppResult<Node> {
+    let (scheme, rest) = line.split_once("://")
+        .ok_or_else(|| anyhow::anyhow!("订阅包含无效的节点链接"))?;
+    let (_, name) = split_name(rest);
+    let parsed = match scheme {
+        "ss" => parse_ss(rest),
+        "vmess" => parse_vmess(rest),
+        "vless" => parse_vless(rest),
+        "trojan" => parse_trojan(rest),
+        "hysteria2" | "hy2" => parse_hy2(rest),
+        "anytls" => parse_anytls(rest),
+        "tuic" => parse_tuic(rest),
+        _ => return Err(anyhow::anyhow!("节点 {name} 的链接协议 {scheme} 尚不支持，请使用 Mihomo YAML 订阅").into()),
+    };
+    let mut node = parsed.ok_or_else(|| anyhow::anyhow!("节点 {name} 的 {scheme} 链接格式无效或包含不支持的选项"))?;
+    if scheme != "vmess" {
+        let (body, _) = split_name(rest);
+        let query = body.split_once('?').map(|(_, query)| query).unwrap_or_default();
+        apply_query(&mut node, query)?;
     }
-    if let Some(rest) = line.strip_prefix("vmess://") {
-        return parse_vmess(rest);
+    if let Some(network) = node.network.as_deref() {
+        if network == "quic" {
+            return Err(anyhow::anyhow!("节点 {name} 使用 Mihomo 不支持的 QUIC 传输").into());
+        }
+        if !matches!(network, "" | "tcp" | "ws" | "grpc") {
+            return Err(anyhow::anyhow!("节点 {name} 的传输类型 {network} 尚不支持").into());
+        }
     }
-    if let Some(rest) = line.strip_prefix("vless://") {
-        return parse_vless(rest);
-    }
-    if let Some(rest) = line.strip_prefix("trojan://") {
-        return parse_trojan(rest);
-    }
-    if let Some(rest) = line.strip_prefix("hysteria2://") {
-        return parse_hy2(rest);
-    }
-    if let Some(rest) = line.strip_prefix("hysteria://") {
-        return parse_hy2(rest);
-    }
-    if let Some(rest) = line.strip_prefix("anytls://") {
-        return parse_anytls(rest);
-    }
-    None
+    Ok(node)
 }
 
 fn parse_ss(s: &str) -> Option<Node> {
     let (body, name) = split_name(s);
+    let body = body.split('?').next().unwrap_or(&body);
     let (userinfo, hostport): (String, String) = if let Some(at) = body.find('@') {
         (body[..at].to_string(), body[at + 1..].to_string())
     } else {
@@ -418,7 +411,7 @@ fn parse_ss(s: &str) -> Option<Node> {
     };
     // userinfo 含 ':' 视为明文 method:password；否则按 base64(method:password) 解码
     let creds = if userinfo.contains(':') {
-        userinfo
+        urldecode(&userinfo)
     } else {
         String::from_utf8(b64_decode(&userinfo)?).ok()?
     };
@@ -464,6 +457,18 @@ fn parse_vmess(s: &str) -> Option<Node> {
         ..Default::default()
     };
     node.tls = Some(v.get("tls").and_then(|x| x.as_str()).map(|s| s == "tls" || s == "reality").unwrap_or(false));
+    node.sni = v.get("sni").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    node.fingerprint = v.get("fp").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    node.alpn = v.get("alpn").and_then(Value::as_str).map(|s| s.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect());
+    if net == "grpc" {
+        node.grpc_service_name = v.get("path").and_then(Value::as_str).map(str::to_string);
+    }
+    let aid = v.get("aid").map(Value::to_string).unwrap_or_default().trim_matches('"').to_string();
+    let header = v.get("type").and_then(Value::as_str).unwrap_or("none");
+    if !matches!(aid.as_str(), "" | "0") || !matches!(header, "" | "none")
+        || v.get("tls").and_then(Value::as_str) == Some("reality") {
+        return None;
+    }
     if net == "ws" {
         // 空值过滤：v2rayN 风格 vmess 链接里 path/host 常为空字符串。
         let path = v.get("path").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
@@ -475,205 +480,167 @@ fn parse_vmess(s: &str) -> Option<Node> {
 
 fn parse_vless(s: &str) -> Option<Node> {
     let (auth_host, name) = split_name(s);
-    let (uuid_host, query) = match auth_host.split_once('?') {
+    let (uuid_host, _) = match auth_host.split_once('?') {
         Some((a, q)) => (a, q),
         None => (auth_host.as_str(), ""),
     };
     let (uuid, hostport) = uuid_host.split_once('@')?;
     let (server, port) = split_host_port(hostport)?;
-    let mut node = Node {
+    let node = Node {
         id: String::new(),
         name,
         kind: "vless".into(),
         server,
         port,
         uuid: Some(uuid.to_string()),
+        tls: Some(false),
         ..Default::default()
     };
-    apply_query(&mut node, query);
     Some(node)
 }
 
 fn parse_trojan(s: &str) -> Option<Node> {
     let (auth_host, name) = split_name(s);
-    let (pass_host, query) = match auth_host.split_once('?') {
+    let (pass_host, _) = match auth_host.split_once('?') {
         Some((a, q)) => (a, q),
         None => (auth_host.as_str(), ""),
     };
     let (password, hostport) = pass_host.split_once('@')?;
     let (server, port) = split_host_port(hostport)?;
-    let mut node = Node {
+    let node = Node {
         id: String::new(),
         name,
         kind: "trojan".into(),
         server,
         port,
         password: Some(urldecode(password)),
+        tls: Some(true),
         ..Default::default()
     };
-    apply_query(&mut node, query);
-    node.tls = Some(node.tls.unwrap_or(true));
     Some(node)
 }
 
 fn parse_hy2(s: &str) -> Option<Node> {
-    let (auth_host, name) = split_name(s);
-    let (pass_host, query) = match auth_host.split_once('?') {
-        Some((a, q)) => (a, q),
-        None => (auth_host.as_str(), ""),
-    };
-    let (password, hostport) = pass_host.split_once('@')?;
-    let (server, port) = split_host_port(hostport)?;
-    let mut node = Node {
-        id: String::new(),
-        name,
-        kind: "hysteria2".into(),
-        server,
-        port,
-        password: Some(urldecode(password)),
-        ..Default::default()
-    };
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == "sni" {
-                node.sni = Some(v.to_string());
-            }
-        }
-    }
+    let mut node = parse_trojan(s)?;
+    node.kind = "hysteria2".into();
     Some(node)
 }
 
-/// v2rayN 风格的 anytls 链接：`anytls://password@host:port?sni=...&insecure=1&fp=chrome&alpn=h2,http/1.1#name`。
-///
-/// anytls（AnyTLS）协议：sing-box 1.13+ 接受 `type: "anytls"` outbound，必须启用 TLS，
-/// 与 hysteria2 行为类似，常用伪装 SNI + insecure=true。详见：
-/// https://github.com/anytls/anytls-go 与 sing-box outbound 文档。
 fn parse_anytls(s: &str) -> Option<Node> {
-    let (auth_host, name) = split_name(s);
-    let (pass_host, query) = match auth_host.split_once('?') {
-        Some((a, q)) => (a, q),
-        None => (auth_host.as_str(), ""),
-    };
-    let (password, hostport) = pass_host.split_once('@')?;
-    let (server, port) = split_host_port(hostport)?;
-    let mut node = Node {
-        id: String::new(),
-        name,
-        kind: "anytls".into(),
-        server,
-        port,
-        password: Some(urldecode(password)),
-        // anytls 强制要求 TLS
-        tls: Some(true),
-        // 机场常用伪装 SNI（如 itunes / bing / apple.com），严格校验会立即
-        // `CRYPTO_ERROR x509: certificate signed by unknown authority`。
-        // 业内默认 insecure=true（与 hysteria2 行为一致），用户可在节点编辑里关掉。
-        skip_cert_verify: Some(true),
-        ..Default::default()
-    };
-    for pair in query.split('&') {
-        let Some((k, v)) = pair.split_once('=') else { continue };
-        let v_dec = urldecode(v);
-        // 空值丢弃，避免写 `sni: ""` / `fingerprint: ""` 等导致 sing-box 启动失败。
-        if v_dec.is_empty() {
-            continue;
-        }
-        match k {
-            "sni" | "peer" => node.sni = Some(v_dec),
-            "fp" | "fingerprint" => node.fingerprint = Some(v_dec),
-            "alpn" => {
-                let list: Vec<String> = v_dec
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if !list.is_empty() {
-                    node.alpn = Some(list);
-                }
-            }
-            "insecure" | "allowInsecure" => {
-                if v == "1" || v.eq_ignore_ascii_case("true") {
-                    node.skip_cert_verify = Some(true);
-                } else {
-                    node.skip_cert_verify = Some(false);
-                }
-            }
-            _ => {}
-        }
-    }
+    let mut node = parse_trojan(s)?;
+    node.kind = "anytls".into();
     Some(node)
 }
 
-fn apply_query(node: &mut Node, query: &str) {
-    let mut path: Option<String> = None;
-    let mut host: Option<String> = None;
-    let mut flow: Option<String> = None;
-    let mut sni: Option<String> = None;
-    let mut fingerprint: Option<String> = None;
-    let mut reality_public_key: Option<String> = None;
-    let mut reality_short_id: Option<String> = None;
-    let mut tls = false;
-    let mut reality = false;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            let v_dec = urldecode(v);
-            // 空值丢弃：v2rayN 风格的链接常留空 `path=&host=`（参数存在但值为空），
-            // 传给 sing-box 会导致 transport 写 `path: ""` / `Host: ""`，握手时服务端拒识。
-            let v_opt = if v_dec.is_empty() { None } else { Some(v_dec) };
-            match k {
-                "security" => {
-                    if v == "tls" {
-                        tls = true;
-                    } else if v == "reality" {
-                        tls = true;
-                        reality = true;
-                    }
+fn parse_tuic(s: &str) -> Option<Node> {
+    let mut node = parse_trojan(s)?;
+    let credentials = node.password.take()?;
+    let (uuid, password) = credentials.split_once(':')?;
+    node.kind = "tuic".into();
+    node.uuid = Some(uuid.to_string());
+    node.password = Some(password.to_string());
+    Some(node)
+}
+
+fn query_bool(value: &str) -> AppResult<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => Err(anyhow::anyhow!("布尔参数必须为 0/1 或 false/true").into()),
+    }
+}
+
+fn apply_query(node: &mut Node, query: &str) -> AppResult<()> {
+    let mut path = None;
+    let mut host = None;
+    let mut extra = serde_json::Map::new();
+    let transport = matches!(node.kind.as_str(), "vless" | "trojan");
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = urldecode(value);
+        if value.is_empty() { continue; }
+        match key {
+            "security" if transport => match value.as_str() {
+                "tls" => node.tls = Some(true),
+                "reality" if node.kind == "vless" => {
+                    node.tls = Some(true);
+                    node.reality = Some(true);
                 }
-                "type" => {
-                    if v == "ws" {
-                        node.network = Some("ws".into());
-                    }
-                }
-                "path" => path = v_opt,
-                "host" => host = v_opt,
-                "flow" => flow = v_opt,
-                "sni" => sni = v_opt,
-                "peer" if sni.is_none() => sni = v_opt,
-                "fp" | "fingerprint" => fingerprint = v_opt,
-                "pbk" | "publicKey" | "public-key" => reality_public_key = v_opt,
-                "sid" | "shortId" | "short-id" => reality_short_id = v_opt,
-                "insecure" | "allowInsecure" => {
-                    if v == "1" || v.eq_ignore_ascii_case("true") {
-                        node.skip_cert_verify = Some(true);
-                    }
-                }
-                _ => {}
+                "none" if node.kind == "vless" => node.tls = Some(false),
+                _ => return Err(anyhow::anyhow!("节点 {} 的 security 参数不受支持: {value}", node.name).into()),
+            },
+            "type" if transport => node.network = Some(value),
+            "path" if transport => path = Some(value),
+            "host" if transport => host = Some(value),
+            "serviceName" if transport => node.grpc_service_name = Some(value),
+            "flow" if node.kind == "vless" => node.flow = Some(value),
+            "sni" | "peer" if node.kind != "shadowsocks" => node.sni = Some(value),
+            "fp" | "fingerprint" if transport || node.kind == "anytls" => node.fingerprint = Some(value),
+            "pbk" | "publicKey" | "public-key" if node.kind == "vless" => {
+                node.reality = Some(true);
+                node.tls = Some(true);
+                node.reality_public_key = Some(value);
             }
+            "sid" | "shortId" | "short-id" if node.kind == "vless" => node.reality_short_id = Some(value),
+            "insecure" | "allowInsecure" | "allow_insecure" if node.kind != "shadowsocks" => {
+                node.skip_cert_verify = Some(query_bool(&value)?);
+            }
+            "alpn" if node.kind != "shadowsocks" => {
+                node.alpn = Some(value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect());
+            }
+            "obfs" | "obfs-password" if node.kind == "hysteria2" => {
+                extra.insert(key.into(), Value::String(value));
+            }
+            "congestion_control" | "udp_relay_mode" if node.kind == "tuic" => {
+                let target = if key == "congestion_control" { "congestion-controller" } else { "udp-relay-mode" };
+                extra.insert(target.into(), Value::String(value));
+            }
+            "disable_sni" | "reduce_rtt" if node.kind == "tuic" => {
+                extra.insert(key.replace('_', "-"), Value::Bool(query_bool(&value)?));
+            }
+            "pinSHA256" if node.kind == "hysteria2" => {
+                extra.insert("fingerprint".into(), Value::String(value));
+            }
+            "mport" | "ports" if node.kind == "hysteria2" => {
+                extra.insert("ports".into(), Value::String(value));
+            }
+            "mportHopInt" | "portHopInt" | "hop-interval" if node.kind == "hysteria2" => {
+                extra.insert("hop-interval".into(), Value::String(value));
+            }
+            "quicSecurity" | "key" if node.kind == "vless" => {}
+            "plugin" if node.kind == "shadowsocks" => {
+                let (plugin, opts) = value.split_once(';').unwrap_or((&value, ""));
+                node.extra = Some(serde_json::json!({
+                    "type": "shadowsocks", "server_port": node.port,
+                    "method": node.cipher, "password": node.password,
+                    "plugin": plugin, "plugin_opts": opts,
+                }));
+            }
+            "encryption" if node.kind == "vless" && value == "none" => {}
+            "headerType" if transport && value == "none" => {}
+            _ => return Err(anyhow::anyhow!("节点 {} 的链接参数 {key} 尚无 Mihomo 映射", node.name).into()),
         }
     }
-    if node.network.as_deref() == Some("ws") || path.is_some() || host.is_some() {
-        node.ws = Some(WsOptions {
-            path,
-            host,
-            headers: None,
-        });
-        if node.network.is_none() {
-            node.network = Some("ws".into());
+    if path.is_some() || host.is_some() || node.network.as_deref() == Some("ws") {
+        if node.network.as_deref().is_some_and(|n| n != "ws") {
+            return Err(anyhow::anyhow!("节点 {} 的 path/host 仅支持 WebSocket 传输", node.name).into());
         }
+        node.network = Some("ws".into());
+        node.ws = Some(WsOptions { path, host, headers: None });
     }
-    node.tls = Some(tls);
-    node.flow = flow;
-    if sni.is_some() {
-        node.sni = sni;
+    if node.grpc_service_name.is_some() && node.network.as_deref() != Some("grpc") {
+        return Err(anyhow::anyhow!("节点 {} 的 serviceName 需要 gRPC 传输", node.name).into());
     }
-    if fingerprint.is_some() {
-        node.fingerprint = fingerprint;
+    if matches!(node.kind.as_str(), "hysteria2" | "tuic") {
+        extra.insert("type".into(), Value::String(node.kind.clone()));
+        extra.insert("password".into(), serde_json::json!(node.password));
+        if let Some(uuid) = &node.uuid { extra.insert("uuid".into(), serde_json::json!(uuid)); }
+        if let Some(sni) = &node.sni { extra.insert("sni".into(), serde_json::json!(sni)); }
+        if let Some(alpn) = &node.alpn { extra.insert("alpn".into(), serde_json::json!(alpn)); }
+        extra.insert("skip-cert-verify".into(), serde_json::json!(node.skip_cert_verify.unwrap_or(node.kind == "hysteria2")));
+        node.extra = Some(Value::Object(extra));
     }
-    if reality || reality_public_key.is_some() {
-        node.reality = Some(true);
-        node.reality_public_key = reality_public_key;
-        node.reality_short_id = reality_short_id;
-    }
+    Ok(())
 }
 
 // ---------------- 工具 ----------------
@@ -691,8 +658,9 @@ fn split_host_port(hp: &str) -> Option<(String, u16)> {
     let hp = hp.split('?').next().unwrap_or(hp);
     let hp = hp.split('/').next().unwrap_or(hp);
     if let Some(colon) = hp.rfind(':') {
-        let server = hp[..colon].to_string();
+        let server = hp[..colon].trim_start_matches('[').trim_end_matches(']').to_string();
         let port: u16 = hp[colon + 1..].parse().ok()?;
+        if server.is_empty() || port == 0 { return None; }
         Some((server, port))
     } else {
         None
@@ -813,6 +781,7 @@ proxies:
         assert_eq!(n[1].kind, "vmess");
         assert_eq!(n[1].network.as_deref(), Some("ws"));
         assert_eq!(n[1].ws.as_ref().unwrap().path.as_deref(), Some("/p"));
+        assert_eq!(n[1].extra.as_ref().unwrap()["ws-opts"]["path"], "/p");
     }
 
     #[test]
@@ -866,6 +835,48 @@ proxies:
     #[test]
     fn parse_empty_fails() {
         assert!(parse("not-a-subscription").is_err());
+    }
+
+    #[test]
+    fn mixed_import_rejects_unsupported_or_invalid_nodes() {
+        let valid = "ss://aes-256-gcm:p@127.0.0.1:8388#valid";
+        let error = parse(&format!("{valid}\nunsupported://p@127.0.0.1:1234#bad-node")).unwrap_err().to_string();
+        assert!(error.contains("bad-node") && error.contains("unsupported"), "{error}");
+        assert!(parse(r#"{"proxies":[{"name":"bad","type":"ss","server":"localhost","port":65536}]}"#).is_err());
+        let error = parse("vless://uuid@host:443?type=xhttp#xhttp-node").unwrap_err().to_string();
+        assert!(error.contains("xhttp-node") && error.contains("xhttp"));
+        assert!(parse("vless://uuid@host:443?type=grpc&authority=unsupported#grpc").is_err());
+        let error = parse("vless://uuid@host:443?type=quic&quicSecurity=none&key=secret#quic-node")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("quic-node") && error.contains("Mihomo 不支持"), "{error}");
+    }
+
+    #[test]
+    fn links_preserve_grpc_quic_and_ss_plugin_options() {
+        let links = [
+            "vless://uuid@host:443?type=grpc&serviceName=my-service&security=tls&sni=tls.example&insecure=0#grpc",
+            "hy2://password@host:443?obfs=salamander&obfs-password=obfs-pass&insecure=0&sni=tls.example&pinSHA256=deadbeef&mport=443,5000-6000&mportHopInt=30#hy2",
+            "tuic://uuid:password@host:443?congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=0#tuic",
+            "ss://aes-256-gcm:pass@host:8388/?plugin=v2ray-plugin%3Bmode%3Dwebsocket%3Bhost%3Dcdn.example%3Btls#ss",
+        ].join("\n");
+        let mut nodes = parse(&links).unwrap();
+        for (index, node) in nodes.iter_mut().enumerate() { node.id = index.to_string(); }
+        let profile = crate::config::model::AppProfile { nodes, ..Default::default() };
+        let provider = crate::config::mihomo::render_provider(&profile).unwrap();
+        let proxies = &provider["proxies"];
+        assert_eq!(proxies[0]["network"], "grpc");
+        assert_eq!(proxies[0]["grpc-opts"]["grpc-service-name"], "my-service");
+        assert_eq!(proxies[1]["obfs-password"], "obfs-pass");
+        assert_eq!(proxies[1]["skip-cert-verify"], false);
+        assert_eq!(proxies[1]["fingerprint"], "deadbeef");
+        assert_eq!(proxies[1]["ports"], "443,5000-6000");
+        assert_eq!(proxies[1]["hop-interval"], "30");
+        assert_eq!(proxies[2]["uuid"], "uuid");
+        assert_eq!(proxies[2]["congestion-controller"], "bbr");
+        assert_eq!(proxies[2]["skip-cert-verify"], false);
+        assert_eq!(proxies[3]["plugin-opts"]["host"], "cdn.example");
+        assert_eq!(proxies[3]["plugin-opts"]["tls"], true);
     }
 
     #[test]

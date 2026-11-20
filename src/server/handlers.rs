@@ -34,13 +34,25 @@ pub struct StatusResp {
 }
 
 pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<StatusResp>> {
-    let st = state.status.read().await;
+    let (stored_running, mode, current_node, traffic_up, traffic_down, up_rate, down_rate) = {
+        let st = state.status.read().await;
+        (
+            st.running,
+            st.mode,
+            st.current_node.clone(),
+            st.traffic_up,
+            st.traffic_down,
+            st.up_rate,
+            st.down_rate,
+        )
+    };
     let mem = crate::system::mem::memory_info();
-    let cfg = state.config.read().await;
+    let cfg = state.config.read().await.clone();
+    let running = stored_running && state.core.version(&cfg).await.is_some();
     // 把 current_node（id）解析成节点列表中的 name，仪表盘显示名称与节点页一致。
     let current_node_name = {
         let p = state.profile.read().await;
-        st.current_node.as_ref().map(|id| {
+        current_node.as_ref().map(|id| {
             p.nodes
                 .iter()
                 .find(|n| &n.id == id)
@@ -49,14 +61,14 @@ pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<Status
         })
     };
     Ok(Json(StatusResp {
-        running: st.running,
-        mode: st.mode.clone(),
-        current_node: st.current_node.clone(),
+        running,
+        mode,
+        current_node,
         current_node_name,
-        traffic_up: st.traffic_up,
-        traffic_down: st.traffic_down,
-        up_rate: st.up_rate,
-        down_rate: st.down_rate,
+        traffic_up,
+        traffic_down,
+        up_rate,
+        down_rate,
         node_count: state.visible_profile().await.nodes.len(),
         elevated: crate::system::admin::is_elevated(),
         mem_mb: (mem.working_set_bytes as f32) / (1024.0 * 1024.0),
@@ -84,7 +96,8 @@ pub async fn select_node(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SelectReq>,
 ) -> AppResult<Json<serde_json::Value>> {
-    {
+    let _mutation = state.mutation.lock().await;
+    let previous = {
         let mut p = state.profile.write().await;
         if !p.nodes.iter().any(|n| n.id == req.node_id) {
             return Err(AppError(anyhow::anyhow!("节点不存在: {}", req.node_id)));
@@ -108,26 +121,27 @@ pub async fn select_node(
                 node_name
             ),
         );
+        prev
+    };
+    if state.core.is_running().await {
+        let cfg = state.config.read().await.clone();
+        if let Err(error) = state.core.select_node(&req.node_id, &cfg).await {
+            let mut p = state.profile.write().await;
+            p.selected_node = previous.clone();
+            let _ = crate::config::manager::save_profile(&state.data_dir, &p);
+            return Err(AppError(anyhow::anyhow!("切换 Mihomo 节点失败: {error}")));
+        }
     }
     {
         let mut st = state.status.write().await;
         st.current_node = Some(req.node_id.clone());
-    }
-    {
-        let st = state.status.read().await;
         state.emit(AppEvent::Status {
             running: st.running,
-            mode: st.mode.clone(),
-            current_node: Some(req.node_id.clone()),
+            mode: st.mode,
+            current_node: st.current_node.clone(),
         });
     }
-    // 实时推送最新配置模型，前端无需刷新即可看到选中高亮。
     state.broadcast_profile().await;
-    if state.core.is_running().await {
-        let p = state.visible_profile().await;
-        let cfg = state.config.read().await;
-        state.core.reload(&p, &cfg).await?;
-    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -137,12 +151,14 @@ pub struct SetDetourReq {
     pub detour: Option<String>,
 }
 
-/// 为节点设置链式前置代理（sing-box outbound.detour）。
+/// 为节点设置链式前置代理（Mihomo `dialer-proxy`）。
 pub async fn set_node_detour(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<SetDetourReq>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
+    let previous = state.profile.read().await.clone();
     let detour_raw = req
         .detour
         .as_ref()
@@ -181,7 +197,7 @@ pub async fn set_node_detour(
                 )));
             }
 
-            if !crate::config::render::detour_is_safe(&p.nodes, &id, d) {
+            if !crate::config::mihomo::detour_is_safe(&p.nodes, &id, d) {
                 return Err(AppError(anyhow::anyhow!(
                     "设置该前置会形成代理环，已拒绝"
                 )));
@@ -192,7 +208,11 @@ pub async fn set_node_detour(
 
         let name = exit.name.clone();
         if let Some(n) = p.nodes.iter_mut().find(|n| n.id == id) {
-            n.detour = detour_raw.clone();
+            n.detour = Some(detour_raw.clone().unwrap_or_default());
+            if let Some(extra) = n.extra.as_mut().and_then(serde_json::Value::as_object_mut) {
+                extra.remove("dialer-proxy");
+                extra.remove("detour");
+            }
         }
         crate::config::manager::save_profile(&state.data_dir, &p)?;
         let detour_label = detour_raw
@@ -210,17 +230,12 @@ pub async fn set_node_detour(
         );
     }
 
-    state.broadcast_profile().await;
-    if state.core.is_running().await {
-        let p = state.visible_profile().await;
-        let cfg = state.config.read().await;
-        // reload 失败要返回给前端，避免「UI 显示已设置但核心仍是旧配置」
-        if let Err(e) = state.core.reload(&p, &cfg).await {
-            return Err(AppError(anyhow::anyhow!(
-                "已保存链式设置，但核心重载失败: {e}。请到日志页查看 FATAL。"
-            )));
-        }
+    if let Err(error) = regen_config(&state).await {
+        *state.profile.write().await = previous.clone();
+        crate::config::manager::save_profile(&state.data_dir, &previous)?;
+        return Err(error);
     }
+    state.broadcast_profile().await;
     Ok(Json(serde_json::json!({
         "ok": true,
         "id": id,
@@ -232,32 +247,37 @@ pub async fn set_mode(
     State(state): State<Arc<AppState>>,
     Json(mode): Json<ProxyMode>,
 ) -> AppResult<Json<serde_json::Value>> {
-    {
+    let _mutation = state.mutation.lock().await;
+    let previous = {
         let mut p = state.profile.write().await;
         let prev = format!("{:?}", p.mode).to_lowercase();
+        let previous = p.mode;
         p.mode = mode;
         crate::config::manager::save_profile(&state.data_dir, &p)?;
         let new_label = format!("{:?}", mode).to_lowercase();
         state.log("info", format!("切换代理模式: {} -> {}", prev, new_label));
+        previous
+    };
+    if let Err(error) = regen_config(&state).await {
+        let mut profile = state.profile.write().await;
+        profile.mode = previous;
+        crate::config::manager::save_profile(&state.data_dir, &profile)?;
+        return Err(AppError(anyhow::anyhow!("切换 Mihomo 模式失败: {error}")));
     }
-    {
-        let st = state.status.read().await;
-        state.emit(AppEvent::Status {
-            running: st.running,
-            mode,
-            current_node: st.current_node.clone(),
-        });
-    }
+    let mut status = state.status.write().await;
+    status.mode = mode;
+    state.emit(AppEvent::Status {
+        running: status.running,
+        mode,
+        current_node: status.current_node.clone(),
+    });
+    drop(status);
     state.broadcast_profile().await;
-    if state.core.is_running().await {
-        let p = state.visible_profile().await;
-        let cfg = state.config.read().await;
-        state.core.reload(&p, &cfg).await?;
-    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn core_start(State(state): State<Arc<AppState>>) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
     let p = state.visible_profile().await;
     let cfg = state.config.read().await;
     let node_name = p
@@ -291,7 +311,7 @@ pub async fn core_start(State(state): State<Arc<AppState>>) -> AppResult<Json<se
                 mode: p.mode,
                 current_node: p.selected_node.clone(),
             });
-            state.log_with("core", "info", "sing-box 核心已启动");
+            state.log_with("core", "info", "Mihomo 核心已启动");
             Ok(Json(serde_json::json!({ "ok": true })))
         }
         Err(e) => {
@@ -304,8 +324,9 @@ pub async fn core_start(State(state): State<Arc<AppState>>) -> AppResult<Json<se
 }
 
 pub async fn core_stop(State(state): State<Arc<AppState>>) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
     state.log_with("core", "info", "正在停止核心…");
-    state.core.stop().await?;
+    let stop_result = state.core.stop().await;
     {
         let mut st = state.status.write().await;
         st.running = false;
@@ -319,14 +340,16 @@ pub async fn core_stop(State(state): State<Arc<AppState>>) -> AppResult<Json<ser
             current_node: st.current_node.clone(),
         });
     }
-    state.log_with("core", "info", "sing-box 核心已停止");
+    state.log_with("core", "info", "Mihomo 核心已停止");
     crate::core::traffic_history::flush().await;
+    stop_result?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn core_restart(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
     let p = state.visible_profile().await;
     let cfg = state.config.read().await;
     state.log_with("core", "info", "正在重启核心…");
@@ -341,7 +364,7 @@ pub async fn core_restart(
         mode: p.mode,
         current_node: p.selected_node.clone(),
     });
-    state.log_with("core", "info", "sing-box 核心已重启");
+    state.log_with("core", "info", "Mihomo 核心已重启");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -433,6 +456,8 @@ pub async fn add_subscription(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddSubscriptionReq>,
 ) -> AppResult<Json<Subscription>> {
+    let _mutation = state.mutation.lock().await;
+    crate::subscription::scheduler::validate_interval(&req.interval)?;
     // 名字留空：先按 URL 生成占位名，首次更新时换成订阅响应头里的机场名。
     let name_auto = req.name.trim().is_empty();
     let name = if name_auto {
@@ -482,6 +507,9 @@ pub async fn delete_subscription(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
+    let subscriptions_before = state.subscriptions.read().await.clone();
+    let profile_before = state.profile.read().await.clone();
     let removed = {
         let mut subs = state.subscriptions.write().await;
         let removed = subs.iter().find(|s| s.id == id).cloned();
@@ -502,6 +530,23 @@ pub async fn delete_subscription(
         crate::config::manager::save_profile(&state.data_dir, &p)?;
         removed
     };
+    let visible = state.visible_profile().await;
+    let cfg = state.config.read().await.clone();
+    if let Err(error) = state.core.update_provider(&visible, &cfg).await {
+        *state.subscriptions.write().await = subscriptions_before.clone();
+        *state.profile.write().await = profile_before.clone();
+        let _ = crate::subscription::manager::save_subscriptions(
+            &state.data_dir,
+            &subscriptions_before,
+        );
+        let _ = crate::config::manager::save_profile(&state.data_dir, &profile_before);
+        let restored = state.visible_profile().await;
+        let _ = state.core.update_provider(&restored, &cfg).await;
+        return Err(AppError(anyhow::anyhow!(
+            "刷新 Mihomo Provider 失败，已恢复订阅和节点数据: {error}"
+        )));
+    }
+    sync_visible_selection(&state).await?;
     state.log_with("sub", "info",
         format!(
             "删除订阅: name={} 移除节点数={}",
@@ -566,12 +611,18 @@ pub async fn update_subscription_settings(
     Path(id): Path<String>,
     Json(req): Json<UpdateSubscriptionReq>,
 ) -> AppResult<Json<Subscription>> {
-    let updated = {
+    let _mutation = state.mutation.lock().await;
+    if let Some(interval) = &req.interval {
+        crate::subscription::scheduler::validate_interval(interval)?;
+    }
+    let (updated, previous, enabled_changed) = {
         let mut subs = state.subscriptions.write().await;
         let sub = match subs.iter_mut().find(|s| s.id == id) {
             Some(s) => s,
             None => return Err(AppError(anyhow::anyhow!("订阅不存在: {}", id))),
         };
+        let previous = sub.clone();
+        let was_enabled = sub.enabled;
         if let Some(v) = req.name {
             if v != sub.name {
                 sub.name_auto = false;
@@ -591,16 +642,60 @@ pub async fn update_subscription_settings(
             sub.user_agent = Some(v);
         }
         let out = sub.clone();
+        let enabled_changed = was_enabled != sub.enabled;
         crate::subscription::manager::save_subscriptions(&state.data_dir, &subs)?;
-        out
+        (out, previous, enabled_changed)
     };
-    // 启用/停用变化会立即改变「可见节点」集合，广播最新配置模型让前端节点列表实时刷新，无需刷新网页。
+    if enabled_changed {
+        let visible = state.visible_profile().await;
+        let cfg = state.config.read().await.clone();
+        if let Err(error) = state.core.update_provider(&visible, &cfg).await {
+            {
+                let mut subs = state.subscriptions.write().await;
+                if let Some(sub) = subs.iter_mut().find(|sub| sub.id == id) {
+                    *sub = previous.clone();
+                }
+                let _ = crate::subscription::manager::save_subscriptions(&state.data_dir, &subs);
+            }
+            let restored = state.visible_profile().await;
+            let _ = state.core.update_provider(&restored, &cfg).await;
+            return Err(AppError(anyhow::anyhow!(
+                "刷新 Mihomo Provider 失败，已恢复订阅设置: {error}"
+            )));
+        }
+        sync_visible_selection(&state).await?;
+    }
+    // 启用/停用变化会立即改变可见节点并刷新运行中的 Provider。
     state.broadcast_profile().await;
     {
         let subs = state.subscriptions.read().await;
         state.emit(AppEvent::SubscriptionsRefresh { subscriptions: subs.clone() });
     }
     Ok(Json(updated))
+}
+
+async fn sync_visible_selection(state: &Arc<AppState>) -> AppResult<crate::config::model::AppProfile> {
+    let visible = state.visible_profile().await;
+    let selection_changed = {
+        let mut profile = state.profile.write().await;
+        if profile.selected_node != visible.selected_node {
+            profile.selected_node = visible.selected_node.clone();
+            crate::config::manager::save_profile(&state.data_dir, &profile)?;
+            true
+        } else {
+            false
+        }
+    };
+    if selection_changed {
+        let mut status = state.status.write().await;
+        status.current_node = visible.selected_node.clone();
+        state.emit(AppEvent::Status {
+            running: status.running,
+            mode: status.mode,
+            current_node: status.current_node.clone(),
+        });
+    }
+    Ok(visible)
 }
 
 // ---------- 规则 ----------
@@ -619,16 +714,11 @@ pub async fn list_rule_presets(
     Ok(Json(crate::rules::presets()))
 }
 
-/// 规则变更后重新生成核心配置：核心运行时 reload（带回滚），未运行时仅写 config.json。
-/// best-effort：sing-box 缺失等错误不阻断接口（profile 已持久化）。
-async fn regen_config(state: &Arc<AppState>) {
+/// 规则变更后重载 Mihomo 配置；核心未运行时只更新待启动文件。
+async fn regen_config(state: &Arc<AppState>) -> AppResult<()> {
     let cfg = state.config.read().await.clone();
     let p = state.visible_profile().await;
-    if state.core.is_running().await {
-        let _ = state.core.reload_safe(&p, &cfg).await;
-    } else {
-        let _ = state.core.write_config_only(&p, &cfg).await;
-    }
+    state.core.reload_safe(&p, &cfg).await
 }
 
 #[derive(serde::Deserialize)]
@@ -643,6 +733,7 @@ pub async fn add_rule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddRuleReq>,
 ) -> AppResult<Json<RouteRule>> {
+    let _mutation = state.mutation.lock().await;
     let r#type = req.r#type.trim().to_string();
     let mut payload = req.payload.trim().to_string();
     let outbound = req.outbound.trim().to_string();
@@ -653,13 +744,13 @@ pub async fn add_rule(
     }
     // IP 规则：去掉端口、补前缀长度，保存规范形式；非法地址直接给出明确提示
     if matches!(r#type.to_ascii_lowercase().as_str(), "ip_cidr" | "ip") {
-        payload = crate::config::render::normalize_ip_cidr(&payload).ok_or_else(|| {
+        payload = crate::config::mihomo::normalize_ip_cidr(&payload).ok_or_else(|| {
             AppError(anyhow::anyhow!(
                 "无效的 IP / CIDR：{payload}。请填 1.2.3.4、1.2.3.0/24 或 IPv6 地址；端口请另建「端口」规则。"
             ))
         })?;
     }
-    // 预检：能否渲染为合法 sing-box 规则（避免写入后核心 FATAL 全站挂掉）
+    // 预检：能否渲染为合法 Mihomo 规则，避免将无效规则写入 profile。
     let probe = crate::config::model::RouteRule {
         id: "probe".into(),
         name: req.name.clone(),
@@ -667,7 +758,6 @@ pub async fn add_rule(
         payload: payload.clone(),
         outbound: outbound.clone(),
     };
-    // 通过 render 单测字段转换
     let rendered = {
         use crate::config::model::{AppProfile, ProxyMode};
         let mut p = AppProfile::default();
@@ -678,16 +768,14 @@ pub async fn add_rule(
         p.nodes = vis.nodes;
         p.selected_node = vis.selected_node;
         let cfg = state.config.read().await.clone();
-        crate::config::render::render(&p, &cfg)
+        crate::config::mihomo::render(&p, &cfg)?
     };
-    // 粗检：route.rules 里除 sniff/hijack 外至少多 1 条用户规则
     let user_n = rendered
-        .get("route")
-        .and_then(|r| r.get("rules"))
+        .get("rules")
         .and_then(|a| a.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    if user_n <= 3 {
+    if user_n <= 1 {
         return Err(AppError(anyhow::anyhow!(
             "无法识别的规则：type={} payload={}。域名请填 host（如 ip.skk.moe），不要写完整 URL 前缀以外无法解析的内容；或改用 domain_suffix。",
             r#type,
@@ -717,14 +805,14 @@ pub async fn add_rule(
             // 同类型同内容已存在：只改出站，不重复添加（扩展里重复点击也安全）
             existing.outbound = rule.outbound.clone();
             rule = existing.clone();
-        } else if crate::config::render::is_rule_set_rule(&rule) {
+        } else if crate::config::mihomo::is_rule_set_rule(&rule) {
             p.rules.push(rule.clone());
         } else {
             // 精确规则排在 GeoSite/GeoIP 前面，否则会先被「国内直连」命中而不生效
             let at = p
                 .rules
                 .iter()
-                .position(crate::config::render::is_rule_set_rule)
+                .position(crate::config::mihomo::is_rule_set_rule)
                 .unwrap_or(p.rules.len());
             p.rules.insert(at, rule.clone());
         }
@@ -738,7 +826,7 @@ pub async fn add_rule(
         );
         before
     };
-    // 规则错误会导致核心 FATAL，这里用严格 reload 并把错误返回前端
+    // 规则错误会导致核心拒绝配置，这里用严格 reload 并把错误返回前端
     let cfg = state.config.read().await.clone();
     let p = state.visible_profile().await;
     if state.core.is_running().await {
@@ -767,12 +855,19 @@ pub async fn delete_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
+    let previous = state.profile.read().await.rules.clone();
     {
         let mut p = state.profile.write().await;
         p.rules.retain(|r| r.id != id);
         crate::config::manager::save_profile(&state.data_dir, &p)?;
     }
-    regen_config(&state).await;
+    if let Err(error) = regen_config(&state).await {
+        let mut profile = state.profile.write().await;
+        profile.rules = previous;
+        crate::config::manager::save_profile(&state.data_dir, &profile)?;
+        return Err(error);
+    }
     state.broadcast_profile().await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -783,26 +878,13 @@ pub async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(cfg): Json<AppConfig>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let (tun_changed, autostart_changed, sysproxy_changed, proxy_port_changed, web_port_changed) = {
-        let cur = state.config.read().await;
-        (
-            cur.enable_tun != cfg.enable_tun,
-            cur.autostart != cfg.autostart,
-            cur.system_proxy != cfg.system_proxy || cur.proxy_port != cfg.proxy_port,
-            cur.proxy_port != cfg.proxy_port,
-            cur.web_port != cfg.web_port,
-        )
-    };
-    {
-        let mut c = state.config.write().await;
-        *c = cfg.clone();
-    }
-    crate::config::manager::save_app_config(&state.data_dir, &cfg)?;
+    state.apply_config(cfg.clone()).await?;
     state.log(
         "info",
         format!(
-            "保存设置: TUN={} stack={} mtu={} 系统代理={} 自启={} 代理端口={} Web端口={} ClashAPI端口={}",
+            "保存设置: TUN={} DNS接管={} stack={} mtu={} 系统代理={} 自启={} 代理端口={} Web端口={} MihomoAPI端口={}",
             cfg.enable_tun,
+            cfg.tun_dns_mode,
             cfg.tun_stack,
             cfg.tun_mtu,
             cfg.system_proxy,
@@ -812,61 +894,13 @@ pub async fn update_config(
             cfg.clash_api_port
         ),
     );
-    if web_port_changed {
+    // 开启 TUN 但未提权时提示：Mihomo 需要管理员权限才能创建虚拟网卡。
+    if cfg.enable_tun && !crate::system::admin::is_elevated() {
         state.log(
             "warn",
-            format!("Web 端口变更为 {}，需要重启后台生效", cfg.web_port),
+            "已开启 TUN，但当前未以管理员身份运行，Mihomo 无法创建虚拟网卡。请通过托盘菜单「以管理员身份运行」重新启动。",
         );
     }
-    // 开机启动状态变化则同步注册表（HKCU Run），托盘菜单与设置页两个入口保持一致。
-    if autostart_changed {
-        match crate::system::autostart::set_autostart(cfg.autostart) {
-            Ok(_) => {
-                let msg = if cfg.autostart {
-                    "已启用开机启动"
-                } else {
-                    "已关闭开机启动"
-                };
-                state.log_with("config", "info", msg);
-            }
-            Err(e) => state.log_with("config", "error", format!("开机启动设置失败: {e}")),
-        };
-    }
-    // 系统代理开关 / 端口变化 → 同步 WinINET。
-    if sysproxy_changed {
-        let r = if cfg.system_proxy {
-            crate::system::sysproxy::enable(cfg.proxy_port)
-        } else {
-            crate::system::sysproxy::disable()
-        };
-        match r {
-            Ok(_) => {
-                let msg = if cfg.system_proxy {
-                    format!("已启用系统代理 → 127.0.0.1:{}", cfg.proxy_port)
-                } else {
-                    "已关闭系统代理".into()
-                };
-                state.log_with("config", "info", msg);
-            }
-            Err(e) => state.log_with("config", "error", format!("系统代理设置失败: {e}")),
-        }
-    }
-    // 开启 TUN 但未提权时提示：sing-box 需要管理员权限才能创建虚拟网卡。
-    if tun_changed && cfg.enable_tun && !crate::system::admin::is_elevated() {
-        state.log(
-            "warn",
-            "已开启 TUN，但当前未以管理员身份运行，sing-box 无法创建虚拟网卡。请通过托盘菜单「以管理员身份运行」重新启动。",
-        );
-    }
-    // 端口/协议等变更后重建核心配置：核心运行时 reload 立即生效，未运行时仅写 config.json。
-    // proxy_port 变化也走这条路径（sysproxy 已同步端口，核心 inbound 也需更新）。
-    let _ = proxy_port_changed;
-    regen_config(&state).await;
-    // 广播配置变更，前端右上角指示灯 / 设置勾选可即时刷新。
-    state.emit(AppEvent::Config {
-        system_proxy: cfg.system_proxy,
-        enable_tun: cfg.enable_tun,
-    });
     Ok(Json(serde_json::json!({
         "ok": true,
         "elevated": crate::system::admin::is_elevated(),
@@ -881,6 +915,7 @@ pub async fn update_config(
 pub async fn admin_elevate(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let _mutation = state.mutation.lock().await;
     if crate::system::admin::is_elevated() {
         return Ok(Json(serde_json::json!({ "ok": true, "already_elevated": true })));
     }
@@ -916,7 +951,7 @@ pub async fn mem_debug(
 
 // ---------- 连接明细（按需；仅管理页打开时由前端轮询，后台不常驻） ----------
 
-/// 代理 sing-box Clash `GET /connections` 全量 JSON。
+/// Return the Mihomo `GET /connections` payload used by the existing connections view.
 /// 不在 traffic_poller 中解析连接列表，避免无人观看时浪费 CPU/内存。
 pub async fn list_connections(
     State(state): State<Arc<AppState>>,
@@ -934,35 +969,15 @@ pub async fn list_connections(
         let cfg = state.config.read().await;
         (cfg.clash_api_port, cfg.api_secret.clone())
     };
-    let url = format!("http://127.0.0.1:{port}/connections");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .no_proxy()
-        .build()
-        .map_err(|e| AppError(anyhow::anyhow!(e)))?;
-    let mut req = client.get(&url);
-    if !secret.is_empty() {
-        req = req.header("Authorization", format!("Bearer {secret}"));
-    }
-    let resp = req.send().await.map_err(|e| {
-        AppError(anyhow::anyhow!(
-            "连接列表请求失败（Clash API 127.0.0.1:{port} 无响应，核心可能未在运行）: {e}"
-        ))
-    })?;
-    if !resp.status().is_success() {
-        return Err(AppError(anyhow::anyhow!(
-            "连接列表 HTTP {}",
-            resp.status()
-        )));
-    }
-    let v: serde_json::Value = resp
-        .json()
+    let api = crate::core::api::MihomoApi::new(port, secret)?;
+    let v = api
+        .connections()
         .await
-        .map_err(|e| AppError(anyhow::anyhow!("连接列表解析失败: {e}")))?;
+        .map_err(|e| AppError(anyhow::anyhow!("Mihomo 连接列表请求失败: {e}")))?;
     Ok(Json(v))
 }
 
-/// 断开连接：`id` 为 None 时断开全部（Clash `DELETE /connections[/:id]`）。
+/// 断开连接：id 为 None 时断开全部。
 async fn close_connections_inner(state: &AppState, id: Option<&str>) -> AppResult<()> {
     if !state.status.read().await.running {
         return Ok(());
@@ -971,32 +986,10 @@ async fn close_connections_inner(state: &AppState, id: Option<&str>) -> AppResul
         let cfg = state.config.read().await;
         (cfg.clash_api_port, cfg.api_secret.clone())
     };
-    let url = match id {
-        Some(id) => format!("http://127.0.0.1:{port}/connections/{}", urlencode_path(id)),
-        None => format!("http://127.0.0.1:{port}/connections"),
-    };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .no_proxy()
-        .build()
-        .map_err(|e| AppError(anyhow::anyhow!(e)))?;
-    let mut req = client.delete(&url);
-    if !secret.is_empty() {
-        req = req.header("Authorization", format!("Bearer {secret}"));
-    }
-    let resp = req
-        .send()
+    crate::core::api::MihomoApi::new(port, secret)?
+        .close_connection(id)
         .await
-        .map_err(|e| AppError(anyhow::anyhow!("断开连接失败: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(AppError(anyhow::anyhow!("断开连接 HTTP {}", resp.status())));
-    }
-    Ok(())
-}
-
-/// 连接 id 是 UUID；仍只保留安全字符，避免拼出别的 API 路径。
-fn urlencode_path(s: &str) -> String {
-    s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
+        .map_err(|e| AppError(anyhow::anyhow!("断开 Mihomo 连接失败: {e}")))
 }
 
 pub async fn close_all_connections(
@@ -1042,3 +1035,6 @@ pub async fn traffic_daily(
         "days": days,
     })))
 }
+
+#[cfg(test)]
+mod tests;

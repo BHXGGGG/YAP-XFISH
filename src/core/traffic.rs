@@ -1,9 +1,7 @@
 //! 代理流量统计：只计走代理（非直连）的连接。
 //!
-//! sing-box 1.13 的 `GET /traffic` 是 **NDJSON 流**（每秒一行速率），不适合
-//! 普通 HTTP JSON 一次解析；且 `/connections` 的 `uploadTotal` / `downloadTotal`
-//! 包含直连流量。这里改为读取 `/connections` 的每条连接，按连接 id 记住上次的
-//! 累计字节，只把出口不是 direct / block 的连接增量计入。
+//! The controller's traffic stream includes direct connections. Read `/connections`,
+//! track each connection's byte deltas, and count only the selected non-direct outbound.
 //!
 //! 已知误差：两次采样之间关闭的连接，最后一段字节不计入（采样间隔 1s，误差很小）。
 
@@ -12,8 +10,15 @@ use std::collections::HashMap;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ConnectionsSnapshot {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_connections")]
     pub connections: Vec<ConnStat>,
+}
+
+fn deserialize_connections<'de, D>(deserializer: D) -> Result<Vec<ConnStat>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<ConnStat>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -24,7 +29,7 @@ pub struct ConnStat {
     pub upload: u64,
     #[serde(default)]
     pub download: u64,
-    /// sing-box 的 chains：[出口, ..., 入口侧]，chains[0] 为最终出口。
+    /// Mihomo's proxy chain. The local selector groups wrap the actual outbound.
     #[serde(default)]
     pub chains: Vec<String>,
 }
@@ -34,10 +39,11 @@ const NON_PROXY_OUTBOUNDS: &[&str] = &["direct", "block", "reject", "dns", "dns-
 
 impl ConnStat {
     fn is_proxied(&self) -> bool {
-        match self.chains.first() {
-            Some(out) => !NON_PROXY_OUTBOUNDS.contains(&out.to_ascii_lowercase().as_str()),
-            None => false,
-        }
+        const APP_GROUPS: &[&str] = &["yap-proxy", "yap-nodes", "global"];
+        self.chains
+            .iter()
+            .find(|name| !APP_GROUPS.contains(&name.to_ascii_lowercase().as_str()))
+            .is_some_and(|out| !NON_PROXY_OUTBOUNDS.contains(&out.to_ascii_lowercase().as_str()))
     }
 }
 
@@ -100,7 +106,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_sing_box_connections_json() {
+    fn skips_selector_groups_before_classifying_direct_connections() {
+        let mut counter = ProxyTrafficCounter::default();
+        let snap = ConnectionsSnapshot {
+            connections: vec![
+                ConnStat { id: "direct".into(), upload: 10, download: 20, chains: vec!["YAP-PROXY".into(), "DIRECT".into()] },
+                ConnStat { id: "proxy".into(), upload: 30, download: 40, chains: vec!["GLOBAL".into(), "YAP-PROXY".into(), "node-1".into(), "DIRECT".into()] },
+            ],
+        };
+        assert_eq!(counter.tick(&snap), (30, 40));
+    }
+
+    #[test]
+    fn parses_mihomo_connections_json() {
         let snap: ConnectionsSnapshot = serde_json::from_str(
             r#"{"downloadTotal":9,"uploadTotal":9,"connections":[
                 {"id":"x","upload":1,"download":2,"chains":["node-1"],"metadata":{}},
@@ -109,5 +127,10 @@ mod tests {
         .unwrap();
         let mut c = ProxyTrafficCounter::default();
         assert_eq!(c.tick(&snap), (1, 2));
+
+        let idle: ConnectionsSnapshot =
+            serde_json::from_str(r#"{"connections":null,"downloadTotal":0,"uploadTotal":0}"#)
+                .unwrap();
+        assert!(idle.connections.is_empty());
     }
 }

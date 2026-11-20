@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REL = ROOT / "release"
 WEBUI = ROOT / "webui"
-# 整体包：首次安装 / sing-box 也更新时使用
-FILES = ["yap-xfish.exe", "sing-box.exe", "libcronet.dll", "README.txt"]
+# 整体包：首次安装 / Mihomo 也更新时使用
+FILES = ["yap-xfish.exe", "mihomo.exe", "libcronet.dll", "README.txt"]
 # 更新包：只含程序自身文件，自动更新默认下载它（体积小）
 UPDATE_FILES = ["yap-xfish.exe", "libcronet.dll", "README.txt", "update.json"]
 VERSION_RE = re.compile(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"\s*$', re.MULTILINE)
@@ -64,23 +64,33 @@ def main() -> None:
                 raise RuntimeError(f"缺少 {path}")
             print(f"  {name:16} {path.stat().st_size:>10} bytes")
 
-        # 更新包清单：程序检查更新时用它判断 sing-box 是否有变化
-        manifest = {"version": version, "singbox_sha256": sha256(REL / "sing-box.exe")}
+        core_digest = sha256(REL / "mihomo.exe")
+        manifest = {
+            "version": version,
+            "mihomo_sha256": core_digest,
+            # Older app builds use this field to request the migration archive.
+            "singbox_sha256": core_digest,
+        }
         (REL / "update.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
 
-        zip_path = REL / f"yap-xfish-v{version}-windows-amd64.zip"
+        zip_path = REL / f"yap-xfish-v{version}-mihomo-windows-amd64.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
             for name in FILES:
                 archive.write(REL / name, name)
+
+        legacy_zip_path = REL / f"yap-xfish-v{version}-windows-amd64.zip"
+        with zipfile.ZipFile(legacy_zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name in FILES:
+                archive.write(REL / name, "sing-box.exe" if name == "mihomo.exe" else name)
 
         update_zip = REL / f"yap-xfish-v{version}-update.zip"
         with zipfile.ZipFile(update_zip, "w", zipfile.ZIP_DEFLATED) as archive:
             for name in UPDATE_FILES:
                 archive.write(REL / name, name)
 
-        for path in (zip_path, update_zip):
+        for path in (zip_path, legacy_zip_path, update_zip):
             with zipfile.ZipFile(path) as archive:
                 if bad_file := archive.testzip():
                     raise RuntimeError(f"压缩包校验失败: {bad_file}")

@@ -1,4 +1,4 @@
-import { store } from './store'
+import { store, updateProfile } from './store'
 
 // 连接后台 WebSocket，接收实时事件（状态/流量/日志/订阅进度）并刷新 store。
 export function connectWs() {
@@ -73,7 +73,7 @@ export function connectWs() {
         }
       } else if (ev.type === 'profile') {
         // 配置模型整体更新（节点 / 选中节点 / 规则 / 模式），实时刷新，无需手动刷新页面。
-        Object.assign(store.profile, ev.profile)
+        updateProfile(ev.profile)
         store.status.node_count = ev.profile.nodes.length
       }
     } catch {}

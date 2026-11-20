@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount } from 'vue'
-import { store, toast } from './store'
+import { store, toast, updateProfile } from './store'
 import { api } from './api'
 import { connectWs } from './ws'
 import Dashboard from './views/Dashboard.vue'
@@ -49,7 +49,7 @@ async function refreshAll() {
       api.status(), api.profile(), api.config(), api.subscriptions(), api.rules(),
     ])
     Object.assign(store.status, s)
-    Object.assign(store.profile, p)
+    updateProfile(p)
     Object.assign(store.config, c)
     // 与 status 对齐，便于右上角指示灯同时读 config / status
     store.status.system_proxy = !!(s as any).system_proxy || !!(c as any).system_proxy

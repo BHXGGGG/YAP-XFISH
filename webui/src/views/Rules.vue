@@ -11,7 +11,7 @@ const type = ref('domain_suffix')
 const payload = ref('')
 const outbound = ref('direct')
 
-// sing-box 合法规则类型（渲染器映射为对应字段）
+ // Mihomo rule types supported by the backend renderer.
 const types: [string, string][] = [
   ['domain_suffix', '域名后缀（推荐，含自身与子域）'],
   ['domain', '域名精确（仅主机本身）'],

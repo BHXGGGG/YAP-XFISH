@@ -1,8 +1,9 @@
-//! 探测连接：优先复用运行核心的 Clash API，配置不一致或核心未运行时使用临时核心。
+//! 探测连接：优先复用运行核心的 Mihomo API，配置不一致或核心未运行时使用临时核心。
 use crate::app::AppState;
+use crate::config::mihomo;
 use crate::config::model::{AppProfile, Node};
-use crate::config::render;
-use std::collections::{HashMap, HashSet};
+use crate::core::api::MihomoApi;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -20,11 +21,12 @@ fn needs_core(node: &Node) -> bool {
         });
     !matches!(node.kind.as_str(), "socks" | "socks5" | "http" | "https")
         || (http_proxy && http_options)
-        || node.detour.as_ref().is_some_and(|d| !d.trim().is_empty())
+        || node.detour().is_some()
 }
 
 pub(super) struct ProbeContext {
-    api: Option<ClashApi>,
+    api: Option<MihomoApi>,
+    provider: bool,
     tags: HashMap<String, String>,
     temporary: Option<TemporaryCore>,
 }
@@ -35,27 +37,24 @@ impl ProbeContext {
         if protocol.is_empty() {
             return Self {
                 api: None,
+                provider: false,
                 tags: HashMap::new(),
                 temporary: None,
             };
         }
 
-        // CoreManager 只在出站配置与已启动实例一致时提供 API 地址。
-        // 还要核对实际 tag：导入 sing-box JSON 时 extra.tag 可能与内部节点 ID 不同。
+        // Reuse the controller only when the currently applied provider matches the profile.
         if let Some((port, secret)) = state.core.probe_api(profile).await {
-            if let Some(api) = ClashApi::new(port, secret) {
+            if let Ok(api) = MihomoApi::new(port, secret) {
                 let tags: HashMap<String, String> = protocol
                     .iter()
-                    .map(|node| {
-                        let outbound = render::node_to_outbound_in_profile(node, profile);
-                        let tag = outbound["tag"].as_str().unwrap_or(&node.id).to_string();
-                        (node.id.clone(), tag)
-                    })
+                    .map(|node| (node.id.clone(), node.id.clone()))
                     .collect();
-                if let Some(available) = api.tags(Duration::from_millis(350)).await {
+                if let Ok(available) = api.provider_proxy_names(mihomo::NODE_PROVIDER).await {
                     if tags.values().all(|tag| available.contains(tag)) {
                         return Self {
                             api: Some(api),
+                            provider: true,
                             tags,
                             temporary: None,
                         };
@@ -64,14 +63,14 @@ impl ProbeContext {
             }
         }
 
-        let nodes = render::expand_with_detours(&profile.nodes, &protocol);
+        let nodes = mihomo::expand_with_detours(&profile.nodes, &protocol);
         let temporary = TemporaryCore::start(state, &nodes).await;
         let api = temporary.as_ref().map(|core| core.api.clone());
         if api.is_none() {
             state.log_with(
                 "latency",
                 "warn",
-                "测速核心不可用，请检查核心路径及节点配置",
+                "测速核心不可用，请检查 Mihomo 路径及节点配置",
             );
         }
         let tags = protocol
@@ -80,16 +79,50 @@ impl ProbeContext {
             .collect();
         Self {
             api,
+            provider: false,
             tags,
             temporary,
         }
     }
 
+    pub(super) async fn prepare_existing(
+        state: &AppState,
+        profile: &AppProfile,
+        targets: &[Node],
+    ) -> Option<Self> {
+        let protocol: Vec<Node> = targets.iter().filter(|n| needs_core(n)).cloned().collect();
+        if protocol.is_empty() {
+            return Some(Self {
+                api: None,
+                provider: false,
+                tags: HashMap::new(),
+                temporary: None,
+            });
+        }
+
+        let (port, secret) = state.core.probe_api(profile).await?;
+        let api = MihomoApi::new(port, secret).ok()?;
+        let tags: HashMap<String, String> = protocol
+            .iter()
+            .map(|node| (node.id.clone(), node.id.clone()))
+            .collect();
+        let available = api.provider_proxy_names(mihomo::NODE_PROVIDER).await.ok()?;
+        if !tags.values().all(|tag| available.contains(tag)) {
+            return None;
+        }
+        Some(Self {
+            api: Some(api),
+            provider: true,
+            tags,
+            temporary: None,
+        })
+    }
+
     pub(super) fn label(&self) -> &'static str {
         if self.temporary.is_some() {
-            "临时 sing-box + Clash delay API"
+            "临时 Mihomo + delay API"
         } else if self.api.is_some() {
-            "复用运行中的 sing-box + Clash delay API"
+            "复用运行中的 Mihomo + delay API"
         } else {
             "HTTP/SOCKS 出口请求（协议节点需可用核心）"
         }
@@ -100,6 +133,7 @@ impl ProbeContext {
             return ProbeMethod::Proxy;
         }
         match (self.api.as_ref(), self.tags.get(&node.id)) {
+            (Some(api), Some(tag)) if self.provider => ProbeMethod::Provider(api.clone(), tag.clone()),
             (Some(api), Some(tag)) => ProbeMethod::Clash(api.clone(), tag.clone()),
             _ => ProbeMethod::Unavailable,
         }
@@ -114,7 +148,8 @@ impl ProbeContext {
     #[cfg(test)]
     pub(super) fn for_api(port: u16, secret: &str, nodes: &[Node]) -> Self {
         Self {
-            api: ClashApi::new(port, secret.to_string()),
+            api: Some(MihomoApi::new(port, secret.to_string()).unwrap()),
+            provider: false,
             tags: nodes.iter().map(|n| (n.id.clone(), n.id.clone())).collect(),
             temporary: None,
         }
@@ -127,7 +162,8 @@ impl ProbeContext {
 }
 
 pub(super) enum ProbeMethod {
-    Clash(ClashApi, String),
+    Clash(MihomoApi, String),
+    Provider(MihomoApi, String),
     Proxy,
     Unavailable,
 }
@@ -136,75 +172,13 @@ impl ProbeMethod {
     pub(super) async fn measure(self, node: &Node, url: &str, timeout_ms: u64) -> Option<u32> {
         match self {
             Self::Clash(api, tag) => api.delay(&tag, url, timeout_ms).await,
+            Self::Provider(api, tag) => api.provider_delay(mihomo::NODE_PROVIDER, &tag, url, timeout_ms).await,
             Self::Proxy => proxy_measure(node, url, Duration::from_millis(timeout_ms.max(1))).await,
             Self::Unavailable => None,
         }
     }
 }
 
-/// 每批共享一个 reqwest Client，复用本地 API 的连接池。
-#[derive(Clone)]
-pub(super) struct ClashApi {
-    client: reqwest::Client,
-    base: String,
-    secret: String,
-}
-
-impl ClashApi {
-    fn new(port: u16, secret: String) -> Option<Self> {
-        Some(Self {
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(Duration::from_millis(500))
-                .build()
-                .ok()?,
-            base: format!("http://127.0.0.1:{port}"),
-            secret,
-        })
-    }
-
-    fn get(&self, path: &str) -> reqwest::RequestBuilder {
-        let request = self.client.get(format!("{}{path}", self.base));
-        if self.secret.is_empty() {
-            request
-        } else {
-            request.bearer_auth(&self.secret)
-        }
-    }
-
-    async fn tags(&self, timeout: Duration) -> Option<HashSet<String>> {
-        let response = self.get("/proxies").timeout(timeout).send().await.ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        let value: serde_json::Value = response.json().await.ok()?;
-        Some(value.get("proxies")?.as_object()?.keys().cloned().collect())
-    }
-
-    async fn delay(&self, tag: &str, url: &str, timeout_ms: u64) -> Option<u32> {
-        let timeout_ms = timeout_ms.max(500);
-        let response = self
-            .get(&format!("/proxies/{}/delay", encode_tag(tag)))
-            .query(&[
-                ("timeout", timeout_ms.to_string()),
-                ("url", url.to_string()),
-            ])
-            // 额外 500ms 留给本地 API 返回超时响应，不再逐节点多等待 1.5s。
-            .timeout(Duration::from_millis(timeout_ms.saturating_add(500)))
-            .send()
-            .await
-            .ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        let value: serde_json::Value = response.json().await.ok()?;
-        value
-            .get("delay")?
-            .as_u64()
-            .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| *n > 0)
-    }
-}
 
 async fn proxy_measure(node: &Node, url: &str, timeout: Duration) -> Option<u32> {
     let scheme = if matches!(node.kind.as_str(), "http" | "https") {
@@ -247,64 +221,72 @@ async fn proxy_measure(node: &Node, url: &str, timeout: Duration) -> Option<u32>
 
 struct TemporaryCore {
     child: Option<tokio::process::Child>,
-    api: ClashApi,
+    api: MihomoApi,
     tmp_dir: PathBuf,
 }
 
 impl TemporaryCore {
     async fn start(state: &AppState, nodes: &[Node]) -> Option<Self> {
-        let binary = resolve_singbox_binary(state).await;
+        let configured = state.config.read().await.core_binary.clone();
+        let binary = crate::core::CoreManager::resolve_core_binary(&configured, &state.data_dir);
         if !binary.exists() || nodes.is_empty() {
             return None;
         }
         let port = pick_free_port()?;
-        let api = ClashApi::new(port, String::new())?;
+        let mixed_port = pick_free_port()?;
+        let api = MihomoApi::new(port, String::new()).ok()?;
         let profile = AppProfile {
             nodes: nodes.to_vec(),
             ..Default::default()
         };
-        let mut outbounds: Vec<serde_json::Value> = nodes
+        let proxies: Vec<serde_json::Value> = nodes
             .iter()
-            .map(|node| {
-                let mut outbound = render::node_to_outbound_in_profile(node, &profile);
-                outbound["tag"] = serde_json::json!(node.id);
-                outbound
-            })
+            .map(|node| mihomo::node_to_proxy(node, &profile))
+            .collect::<anyhow::Result<_>>()
+            .ok()?;
+        let mut proxy_names: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|node| serde_json::json!(node.id))
             .collect();
-        outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
+        proxy_names.push(serde_json::json!("DIRECT"));
         let config = serde_json::json!({
-            "log": { "level": "error", "timestamp": true },
+            "mixed-port": mixed_port,
+            "allow-lan": false,
+            "bind-address": "127.0.0.1",
+            "mode": "global",
+            "log-level": "error",
+            "external-controller": format!("127.0.0.1:{port}"),
+            "find-process-mode": "off",
             "dns": {
-                "servers": [{ "type": "udp", "tag": "local", "server": "223.5.5.5" }],
-                "final": "local",
-                "strategy": "prefer_ipv4"
+                "enable": true,
+                "ipv6": true,
+                "enhanced-mode": "redir-host",
+                "default-nameserver": ["223.5.5.5"],
+                "nameserver": ["223.5.5.5"]
             },
-            "outbounds": outbounds,
-            "route": {
-                "final": "direct",
-                "auto_detect_interface": true,
-                "default_domain_resolver": { "server": "local" }
-            },
-            "experimental": { "clash_api": {
-                "external_controller": format!("127.0.0.1:{port}"),
-                "secret": ""
-            }}
+            "proxies": proxies,
+            "proxy-groups": [
+                { "name": "YAP-PROXY", "type": "select", "proxies": proxy_names },
+                { "name": "GLOBAL", "type": "select", "proxies": ["YAP-PROXY"] }
+            ],
+            "rules": ["MATCH,YAP-PROXY"]
         });
-        let tmp_dir = std::env::temp_dir().join(format!(
+        let tmp_dir = state.data_dir.join("tmp").join(format!(
             "yap-xfish-probe-{}-{}",
             std::process::id(),
             crate::app::gen_id()
         ));
         std::fs::create_dir_all(&tmp_dir).ok()?;
-        let path = tmp_dir.join("probe.json");
-        if std::fs::write(&path, serde_json::to_vec(&config).ok()?).is_err() {
+        let path = tmp_dir.join("probe.yaml");
+        if std::fs::write(&path, serde_yaml::to_string(&config).ok()?).is_err() {
             let _ = std::fs::remove_dir_all(&tmp_dir);
             return None;
         }
         let mut command = tokio::process::Command::new(binary);
         command
-            .arg("run")
-            .arg("-c")
+            .arg("-d")
+            .arg(&tmp_dir)
+            .arg("-f")
             .arg(&path)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -335,7 +317,7 @@ impl TemporaryCore {
             if session.child.as_mut()?.try_wait().ok()?.is_some() {
                 break;
             }
-            if session.api.tags(Duration::from_millis(200)).await.is_some() {
+            if session.api.proxy_names().await.is_ok() {
                 return Some(session);
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
@@ -372,47 +354,7 @@ impl Drop for TemporaryCore {
     }
 }
 
-async fn resolve_singbox_binary(state: &AppState) -> PathBuf {
-    let configured = state.config.read().await.core_binary.clone();
-    let exe_dir = crate::app::exe_dir();
-    for path in [
-        exe_dir.join("sing-box.exe"),
-        exe_dir.join("core").join("sing-box.exe"),
-    ] {
-        if path.exists() {
-            return path;
-        }
-    }
-    let configured = if configured.is_absolute() {
-        configured
-    } else {
-        exe_dir.join(configured)
-    };
-    if configured.exists() {
-        return configured;
-    }
-    let data_core = state.data_dir.join("core").join("sing-box.exe");
-    if data_core.exists() {
-        data_core
-    } else {
-        state.data_dir.join("..").join("sing-box.exe")
-    }
-}
-
 fn pick_free_port() -> Option<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
     Some(listener.local_addr().ok()?.port())
-}
-
-fn encode_tag(tag: &str) -> String {
-    let mut encoded = String::new();
-    for byte in tag.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }

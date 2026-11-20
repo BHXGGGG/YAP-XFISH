@@ -1,13 +1,15 @@
 [package]
 name = "yap-xfish"
-version = "0.1.53"
+version = "0.2.2"
 edition = "2021"
 default-run = "yap-xfish"
-description = "YAP-XFISH — Windows Sing-box 代理客户端（WebUI + 托盘）"
+description = "YAP-XFISH — Windows Mihomo 代理客户端（WebUI + 托盘）"
 license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "sync", "time", "fs", "io-util", "signal"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.24"
 axum = { version = "0.7", features = ["ws"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

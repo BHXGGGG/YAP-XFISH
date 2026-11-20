@@ -1,7 +1,19 @@
-YAP-XFISH v0.1.53 —— Windows Sing-box 代理客户端（自包含分发）
+YAP-XFISH v0.2.2 —— Windows Mihomo 代理客户端（自包含分发）
 
 【本版更新】
-- HTTP(S) 节点保留订阅中的认证与 TLS 配置；带认证或 TLS 的 HTTP 节点通过 sing-box 测速，避免测速时丢失节点参数。
+- Hysteria2 分享链接支持 pinSHA256、mport 和端口跳跃间隔参数；VLESS QUIC 不支持时提示具体原因。
+- 修复 SS 插件参数导致的订阅更新 503，错误信息显示 Mihomo 返回的具体原因；不支持的节点或链接参数会明确拒绝导入并保留旧节点。
+- 修复指定节点规则、链式代理、多端口规则；全局和直连模式继续执行自定义规则。
+- 修复 Trojan、HTTPS、AnyTLS 的 SNI；补齐 gRPC、Hysteria2 混淆和 TUIC 链接参数。
+- 修改控制端口、密钥或核心路径时重启核心，失败恢复旧设置；系统代理随核心就绪后启用、停止时关闭；订阅提交与回滚不会覆盖同时保存的配置。
+- 修复运行中 Provider 节点测速、取消 TUN 提权后托盘失效、自定义 Cron 不触发的问题。
+
+【v0.2.0】
+- 使用 Mihomo 作为代理核心，配置以 YAML 保存。
+- 订阅节点写入本地 Proxy Provider；更新 Provider、切换节点时 Mihomo 进程保持运行。
+- TUN DNS 默认使用 native；选择 hijack 才启用完整 DNS 劫持及 strict-route。
+- 停止或退出前先通过 Mihomo API 关闭 TUN 并重载配置，清理 strict-route 网络状态。
+- HTTP(S) 节点保留订阅中的认证与 TLS 配置；带认证或 TLS 的 HTTP 节点通过 Mihomo 测速。
 - 订阅更新失败时保留上次成功的节点数和更新时间，5 分钟后自动重试；手动更新可立即重试。
 
 【v0.1.52】
@@ -54,7 +66,7 @@ YAP-XFISH v0.1.53 —— Windows Sing-box 代理客户端（自包含分发）
 
 【使用】
 1. 把本 zip 解压到任意目录（例如 D:\YAP-XFISH）。
-2. 保持 yap-xfish.exe 与 sing-box.exe 在同一目录。
+2. 保持 yap-xfish.exe 与 mihomo.exe 在同一目录。
 3. 双击 yap-xfish.exe 启动（不会弹出黑色控制台窗口）。
 4. 管理面板：点击托盘图标「打开管理面板」会自动用默认浏览器打开（无黑框），
    或自行访问 http://127.0.0.1:9677 。
@@ -62,23 +74,22 @@ YAP-XFISH v0.1.53 —— Windows Sing-box 代理客户端（自包含分发）
 
 【从旧版升级】
 1. 从托盘菜单退出旧版程序。
-2. 将本包中的 yap-xfish.exe、sing-box.exe 和 README.txt 复制到原程序目录。
+2. 将本包中的 yap-xfish.exe、mihomo.exe 和 README.txt 复制到原程序目录。
 3. 保留原有 data 目录，其中存放配置、节点与订阅。
 
 【便携 / 数据位置】
-- 程序完全绿色便携：所有运行时产生的文件（配置、节点、订阅、sing-box 配置、日志等）
+- 程序完全绿色便携：所有运行时产生的文件（配置、节点、订阅、Mihomo 配置、日志等）
   都放在 exe 同目录的 `data` 子目录里。
 - 删除整个程序文件夹 = 删除所有数据，移动文件夹即可整体迁移，无需安装、不写注册表（除可选的开机启动）。
 - 首次启动若检测到旧版 `%LOCALAPPDATA%\Proxy` 数据，会自动复制过来（不删除原目录），订阅与配置不丢失。
 
 【核心定位】
-程序优先使用与 yap-xfish.exe 同一目录的 sing-box.exe，因此移动整个程序文件夹时
-核心路径会自动跟随，不会停留在旧绝对路径。查找顺序：
-  1. 与 yap-xfish.exe 同一目录的 sing-box.exe（优先，随文件夹移动）
-  2. 与 yap-xfish.exe 同一目录的 core\sing-box.exe
-  3. 设置中指定的 core_binary（相对路径按 exe 目录解析；绝对路径仍存在也可用）
-  4. <exe 目录>\data\core\sing-box.exe
-把两个 exe 放在同一目录即可开箱即用。
+程序优先使用设置中的有效核心路径；该路径不存在时再查找随包附带的核心。查找顺序：
+  1. 设置中指定的 core_binary（相对路径按 exe 目录解析）
+  2. 与 yap-xfish.exe 同一目录的 mihomo.exe
+  3. 与 yap-xfish.exe 同一目录的 core\mihomo.exe
+  4. <exe 目录>\data\core\mihomo.exe
+把两个 exe 放在同一目录即可开箱即用；便携使用可将核心路径设为 mihomo.exe。
 
 【常见问题】
 - Clash API / 混合（SOCKS5+HTTP）代理端口被占用（默认 9999 / 10020）：在「设置」里改成其他端口。
@@ -89,7 +100,7 @@ YAP-XFISH v0.1.53 —— Windows Sing-box 代理客户端（自包含分发）
   若站点仍拦截，可在该订阅的「User-Agent」字段填入服务商要求的 UA 覆盖。
 - 延迟测试（节点管理页「测试全部延迟」）：默认对 gstatic generate_204 测速，并发 50、超时 5000ms
   （均可在「设置」中修改）。HTTP/SOCKS 节点直接通过自身代理请求测试 URL；其余协议通过
-  sing-box 的延迟 API 测试真实出口。运行中的核心无法复用时自动启用临时核心。
+  Mihomo 的延迟 API 测试真实出口。运行中的核心无法复用时自动启用临时核心。
   延迟 < 500ms 绿色显示，可点「按延迟排序」升序排列。
 
 【订阅默认】
@@ -101,5 +112,5 @@ YAP-XFISH v0.1.53 —— Windows Sing-box 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.1.53
-- 本包附带 sing-box v1.14.4（windows/amd64，与 yap-xfish.exe 同目录；libcronet.dll 供 naive 协议使用）
+- YAP-XFISH v0.2.2
+- 本包附带 Mihomo Meta v1.19.34（windows/amd64 compatible；libcronet.dll 供 naive 协议使用）

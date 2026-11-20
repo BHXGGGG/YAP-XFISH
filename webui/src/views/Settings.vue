@@ -13,7 +13,7 @@ async function save() {
   if (form.enable_tun && !store.config.enable_tun && !store.status.elevated) {
     try {
       const updated = await api.updateConfig({ ...form, enable_tun: true })
-      Object.assign(store.config, updated)
+      Object.assign(store.config, form, updated)
     } catch (e: any) {
       toast(e.message || '保存设置失败，请重试')
       return
@@ -23,6 +23,7 @@ async function save() {
   }
   try {
     await api.updateConfig({ ...form })
+    Object.assign(store.config, form)
     toast('设置已保存（修改端口需重启后台）')
   } catch (e: any) { toast(e.message) }
 }
@@ -286,6 +287,12 @@ function onElevateCancel() {
                   <option value="system">system（纯系统栈）</option>
                 </select>
               </label>
+              <label>DNS 接管
+                <select v-model="form.tun_dns_mode">
+                  <option value="native">native（Windows 兼容优先）</option>
+                  <option value="hijack">hijack（完整劫持并启用 strict-route）</option>
+                </select>
+              </label>
               <label>MTU<input v-model.number="form.tun_mtu" type="number" min="1280" max="65535" step="1" /></label>
             </div>
             <p class="hint">
@@ -330,7 +337,7 @@ function onElevateCancel() {
 
     <Modal :open="showElevateDialog" title="需要管理员权限" subtitle="TUN 模式需要管理员权限才能创建虚拟网卡" icon="⚡" :width="440" @close="onElevateCancel">
       <div class="elevate-body">
-        <p>当前未以管理员身份运行，启用 TUN 后 sing-box 无法创建虚拟网卡。</p>
+         <p>当前未以管理员身份运行，启用 TUN 后 Mihomo 无法创建虚拟网卡。</p>
         <p>是否立即<strong>以管理员身份重新启动</strong> YAP-XFISH？重启后自动启用 TUN。</p>
         <div class="elevate-actions">
           <button class="primary elevate-btn" @click="onElevateConfirm">以管理员身份运行</button>

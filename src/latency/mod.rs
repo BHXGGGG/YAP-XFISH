@@ -7,11 +7,86 @@ use crate::error::{AppError, AppResult};
 use probe::ProbeContext;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
 /// 与设置页范围一致；默认 50，避免把用户设置静默压到 16。
 const MAX_CONCURRENCY: usize = 200;
+
+pub fn start_selected_node_monitor(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tick.tick().await;
+        let mut last_node = None;
+
+        loop {
+            tick.tick().await;
+            if !state.core.is_running().await {
+                publish_selected_node_result(&state, &mut last_node, None);
+                continue;
+            }
+
+            if let Some(result) = probe_selected_node(&state).await {
+                publish_selected_node_result(&state, &mut last_node, Some(result));
+            }
+        }
+    });
+}
+
+fn publish_selected_node_result(
+    state: &AppState,
+    last_node: &mut Option<String>,
+    result: Option<(String, bool)>,
+) {
+    let (id, reachable) = match result {
+        Some((id, reachable)) => {
+            *last_node = Some(id.clone());
+            (id, Some(reachable))
+        }
+        None => match last_node.take() {
+            Some(id) => (id, None),
+            None => return,
+        },
+    };
+    state.emit(AppEvent::SelectedNodeReachability { id, reachable });
+}
+
+async fn probe_selected_node(state: &AppState) -> Option<(String, bool)> {
+    if !state.core.is_running().await {
+        return None;
+    }
+
+    let profile = state.visible_profile().await;
+    let id = profile.selected_node.clone()?;
+    let node = profile.nodes.iter().find(|node| node.id == id)?.clone();
+    {
+        let status = state.status.read().await;
+        if !status.running || status.current_node.as_deref() != Some(&id) {
+            return None;
+        }
+    }
+
+    let context = ProbeContext::prepare_existing(state, &profile, std::slice::from_ref(&node)).await?;
+    let config = state.config.read().await.clone();
+    let latency = context
+        .method_for(&node)
+        .measure(&node, &config.latency_test_url, config.latency_timeout)
+        .await;
+    if !state.core.is_running().await {
+        return None;
+    }
+
+    let selected = state.visible_profile().await.selected_node;
+    let status = state.status.read().await;
+    if selected.as_deref() != Some(&id)
+        || !status.running
+        || status.current_node.as_deref() != Some(&id)
+    {
+        return None;
+    }
+    Some((id, latency.is_some()))
+}
 
 struct NodeClaims {
     shared: Arc<Mutex<HashSet<String>>>,
@@ -136,6 +211,7 @@ impl LatencyBatch {
 
         // 结果已推送；整批只落盘一次，磁盘写入不阻塞首个结果。
         {
+            let _mutation = state.mutation.lock().await;
             let profile = state.profile.read().await;
             crate::config::manager::save_profile(&state.data_dir, &profile)?;
         }
@@ -180,6 +256,7 @@ impl LatencyBatch {
                         .first_result_ms
                         .get_or_insert_with(|| started.elapsed().as_millis());
                     {
+                        let _mutation = state.mutation.lock().await;
                         let mut profile = state.profile.write().await;
                         if let Some(node) = profile.nodes.iter_mut().find(|n| n.id == id) {
                             node.latency = latency;

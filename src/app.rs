@@ -14,7 +14,7 @@ pub struct AppConfig {
     /// Web 管理面板端口（默认 9677）。
     #[serde(default = "default_web_port")]
     pub web_port: u16,
-    /// 核心程序路径；缺省时（旧配置/部分配置）回退为 exe 同目录 sing-box.exe。
+    /// Mihomo 核心程序路径。
     #[serde(default = "default_core_binary")]
     pub core_binary: PathBuf,
     /// 数据目录（展示用；运行时实际目录由 default_data_dir 决定）。缺省为空。
@@ -53,13 +53,15 @@ pub struct AppConfig {
     /// TUN MTU。默认 1500 优先连通；需要冲吞吐时可在设置里改到 9000 等。
     #[serde(default = "default_tun_mtu")]
     pub tun_mtu: u32,
+    /// TUN DNS 接管模式：native 优先兼容 Windows，hijack 启用完整 DNS 劫持。
+    #[serde(default = "default_tun_dns_mode")]
+    pub tun_dns_mode: String,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         let data_dir = default_data_dir();
-        // 自包含分发：核心默认与 exe 同目录，免去用户手动放置
-        let core_binary = exe_dir().join("sing-box.exe");
+        let core_binary = exe_dir().join("mihomo.exe");
         AppConfig {
             web_port: 9677,
             core_binary,
@@ -75,6 +77,7 @@ impl Default for AppConfig {
             latency_timeout: default_latency_timeout(),
             tun_stack: default_tun_stack(),
             tun_mtu: default_tun_mtu(),
+            tun_dns_mode: default_tun_dns_mode(),
         }
     }
 }
@@ -92,7 +95,7 @@ fn default_clash_api_port() -> u16 {
 }
 
 fn default_core_binary() -> PathBuf {
-    exe_dir().join("sing-box.exe")
+    exe_dir().join("mihomo.exe")
 }
 
 fn default_latency_url() -> String {
@@ -114,6 +117,10 @@ fn default_tun_stack() -> String {
 
 fn default_tun_mtu() -> u32 {
     1500
+}
+
+fn default_tun_dns_mode() -> String {
+    "native".into()
 }
 
 fn random_secret() -> String {
@@ -186,6 +193,11 @@ pub enum AppEvent {
         latency: Option<u32>,
         message: String,
     },
+    /// 后台当前节点连通状态；None 表示停止监测并清除托盘告警。
+    SelectedNodeReachability {
+        id: String,
+        reachable: Option<bool>,
+    },
     /// 配置模型整体更新（节点 / 选中节点 / 规则 / 模式）。前端据此实时刷新，无需手动刷新页面。
     Profile {
         profile: AppProfile,
@@ -204,6 +216,8 @@ pub enum AppEvent {
 /// 全局共享状态。所有字段均放在 Arc 内，AppState 本身可 Clone 以塞进 Axum State。
 #[derive(Clone)]
 pub struct AppState {
+    /// 串行提交配置，避免一次失败恢复覆盖另一个已经保存的操作。
+    pub mutation: Arc<Mutex<()>>,
     pub config: Arc<RwLock<AppConfig>>,
     pub profile: Arc<RwLock<AppProfile>>,
     pub status: Arc<RwLock<RuntimeStatus>>,
@@ -223,14 +237,14 @@ impl AppState {
         let current_node = profile.selected_node.clone();
         let mode = profile.mode;
         let core = CoreManager::new(
-            config.core_binary.clone(),
-            data_dir.join("config.json"),
+            data_dir.join("mihomo.yaml"),
             event_tx.clone(),
         );
         // 加载已持久化的订阅（阶段 5：重启后台后订阅不丢失）
         let subscriptions = crate::subscription::manager::load_subscriptions(&data_dir)
             .unwrap_or_default();
         AppState {
+            mutation: Arc::new(Mutex::new(())),
             config: Arc::new(RwLock::new(config)),
             profile: Arc::new(RwLock::new(profile)),
             status: Arc::new(RwLock::new(RuntimeStatus {
@@ -245,6 +259,58 @@ impl AppState {
             updating: Arc::new(Mutex::new(HashSet::new())),
             latency_in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
+    }
+
+    pub async fn apply_config(&self, cfg: AppConfig) -> AppResult<()> {
+        let _mutation = self.mutation.lock().await;
+        let previous = self.config.read().await.clone();
+        let profile = self.visible_profile().await;
+        crate::config::mihomo::render(&profile, &cfg)?;
+        if cfg.web_port == 0 || cfg.web_port == cfg.proxy_port || cfg.web_port == cfg.clash_api_port {
+            return Err(anyhow::anyhow!("Web、代理和控制 API 端口必须非零且互不相同").into());
+        }
+        let running = self.core.is_running().await;
+        let controller_changed = previous.clash_api_port != cfg.clash_api_port
+            || previous.api_secret != cfg.api_secret || previous.core_binary != cfg.core_binary;
+        let result: AppResult<()> = async {
+            if running && controller_changed {
+                self.core.restart(&profile, &cfg).await?;
+            } else {
+                self.core.reload_safe(&profile, &cfg).await?;
+            }
+            if !running && previous.system_proxy {
+                crate::system::sysproxy::disable()?;
+            }
+            if previous.autostart != cfg.autostart {
+                crate::system::autostart::set_autostart(cfg.autostart)?;
+            }
+            crate::config::manager::save_app_config(&self.data_dir, &cfg)?;
+            Ok(())
+        }.await;
+        if let Err(error) = result {
+            let restored = if running && (controller_changed || !self.core.is_running().await) {
+                self.core.restart(&profile, &previous).await
+            } else {
+                self.core.reload_safe(&profile, &previous).await
+            };
+            crate::config::manager::save_app_config(&self.data_dir, &previous)?;
+            if previous.autostart != cfg.autostart {
+                crate::system::autostart::set_autostart(previous.autostart)?;
+            }
+            let actual_running = self.core.is_running().await;
+            self.status.write().await.running = actual_running;
+            self.emit(AppEvent::Status { running: actual_running, mode: profile.mode, current_node: profile.selected_node.clone() });
+            if let Err(restore_error) = restored {
+                return Err(anyhow::anyhow!("应用设置失败: {error}；恢复旧配置失败: {restore_error}").into());
+            }
+            return Err(error);
+        }
+        *self.config.write().await = cfg.clone();
+        if previous.web_port != cfg.web_port {
+            self.log("warn", format!("Web 端口变更为 {}，重启程序后生效", cfg.web_port));
+        }
+        self.emit(AppEvent::Config { system_proxy: cfg.system_proxy, enable_tun: cfg.enable_tun });
+        Ok(())
     }
 
     /// 广播一个事件给所有浏览器。
@@ -301,6 +367,11 @@ pub async fn broadcast_profile(&self) {
             Some(sid) => enabled.contains(sid),
             None => true,
         });
+        for node in &mut vis.nodes {
+            if let Some(target) = crate::config::mihomo::detour_target(node, &p.nodes) {
+                node.detour = Some(target.id.clone());
+            }
+        }
         let valid = vis
             .selected_node
             .as_ref()
@@ -364,6 +435,53 @@ pub fn maybe_migrate_legacy(data_dir: &std::path::Path) {
     }
 }
 
+/// The previous updater only knows how to extract `sing-box.exe` from a full package.
+/// The migration package stores the Mihomo binary under that temporary legacy name.
+pub fn maybe_migrate_mihomo_core(configured_core: &std::path::Path) {
+    let exe_dir = exe_dir();
+    let targets = [
+        exe_dir.join("mihomo.exe"),
+        configured_core.to_path_buf(),
+    ];
+    let candidates = [
+        exe_dir.join("sing-box.exe"),
+        configured_core.with_file_name("sing-box.exe"),
+    ];
+    for target in targets {
+        if target.exists() {
+            continue;
+        }
+        for candidate in &candidates {
+            if !candidate.exists() {
+                continue;
+            }
+            let mut command = std::process::Command::new(candidate);
+            command
+                .arg("-v")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let Ok(output) = command.output() else { continue };
+            let version = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if output.status.success()
+                && version.to_ascii_lowercase().contains("mihomo meta")
+                && std::fs::rename(candidate, &target).is_ok()
+            {
+                println!("[proxy] 已完成 Mihomo 核心迁移");
+                break;
+            }
+        }
+    }
+}
+
 /// 递归复制目录（用于一次性迁移旧数据）。
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
@@ -380,8 +498,8 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     Ok(())
 }
 
-/// 当前 exe 所在目录。自包含分发时使用它来定位同包内的 sing-box 核心，
-/// 使 yap-xfish.exe 与 sing-box.exe 放在同一目录即可直接运行，无需额外配置。
+/// 当前 exe 所在目录。自包含分发时使用它来定位同包内的 Mihomo 核心，
+/// 使 yap-xfish.exe 与 mihomo.exe 放在同一目录即可直接运行，无需额外配置。
 pub fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -400,6 +518,27 @@ pub fn load_or_init(data_dir: &std::path::Path) -> AppResult<(AppConfig, AppProf
         config.data_dir = data_dir.to_path_buf();
         dirty = true;
     }
+    if config
+        .core_binary
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("sing-box.exe"))
+    {
+        config.core_binary.set_file_name("mihomo.exe");
+        dirty = true;
+    }
+    let dns_mode = config.tun_dns_mode.trim().to_ascii_lowercase();
+    if !matches!(dns_mode.as_str(), "native" | "hijack") {
+        return Err(anyhow::anyhow!(
+            "不支持的 TUN DNS 接管模式: {}（应为 native 或 hijack）",
+            config.tun_dns_mode
+        )
+        .into());
+    }
+    if config.tun_dns_mode != dns_mode {
+        config.tun_dns_mode = dns_mode;
+        dirty = true;
+    }
     // v0.1.25 曾默认 MTU=9000 + mixed/strict_route，部分环境会完全上不了网。
     // 把遗留的 9000 软降到 1500（连通优先）；用户仍可在设置里手动改回。
     if config.tun_mtu == 9000 {
@@ -413,7 +552,7 @@ pub fn load_or_init(data_dir: &std::path::Path) -> AppResult<(AppConfig, AppProf
     // 修复 v0.1.35 引入的「同一订阅内多个节点 id 重复」问题：当时为了解决
     // 机场「剩余流量：192.89 GB」之类改名导致 id 漂移，把 name 从 stable_node_id
     // 哈希里去掉，结果某些机场订阅里 4 条公告占位节点 (kind, server, port) 全
-    // 一样，渲染时 sing-box FATAL `duplicate outbound/endpoint tag`。
+    // 一样，渲染时核心会因重复代理名拒绝启动。
     // v0.1.35+ 在 update_subscription_inner 里给后续重复身份补 "-1" "-2" 后缀，
     // 但已经写盘的历史 profile 仍带重复 id——这里启动时按同规则扫描+改写一次。
     if dedupe_duplicate_node_ids(&mut profile) {

@@ -183,7 +183,7 @@ function onElevateCancel() {
 
     <Modal :open="showElevateDialog" title="需要管理员权限" subtitle="TUN 模式需要管理员权限才能创建虚拟网卡" icon="⚡" :width="440" @close="onElevateCancel">
       <div class="elevate-body">
-        <p>当前未以管理员身份运行，启用 TUN 后 sing-box 无法创建虚拟网卡。</p>
+         <p>当前未以管理员身份运行，启用 TUN 后 Mihomo 无法创建虚拟网卡。</p>
         <p>是否立即<strong>以管理员身份重新启动</strong> YAP-XFISH？重启后自动启用 TUN。</p>
         <div class="elevate-actions">
           <button class="primary elevate-btn" @click="onElevateConfirm">以管理员身份运行</button>

@@ -14,7 +14,7 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon("assets/app.ico");
         res.set("ProductName", "YAP-XFISH");
-        res.set("FileDescription", "YAP-XFISH — Windows Sing-box 代理客户端");
+        res.set("FileDescription", "YAP-XFISH — Windows Mihomo 代理客户端");
         // 清单：Per-Monitor V2 DPI 感知 + longPathAware
         if std::path::Path::new("assets/app.manifest").exists() {
             res.set_manifest_file("assets/app.manifest");

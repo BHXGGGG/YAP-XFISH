@@ -45,7 +45,7 @@ pub fn lan_ipv4() -> Option<Ipv4Addr> {
     unsafe {
         while !cur.is_null() {
             let a = &*cur;
-            // wintun（sing-box 的 tun0）在系统里是普通「已启用 + 有网关」的网卡，
+            // Wintun 适配器在系统里是普通「已启用 + 有网关」的网卡，
             // 只能按描述 / 名称排除，否则会优先返回 172.19.0.1。
             let usable = a.OperStatus == IfOperStatusUp
                 && a.IfType != IF_TYPE_SOFTWARE_LOOPBACK
@@ -83,7 +83,7 @@ unsafe fn is_tun_adapter(a: &IP_ADAPTER_ADDRESSES_LH) -> bool {
     let name = wide_lossy(a.FriendlyName);
     [desc, name].iter().any(|s| {
         let s = s.to_ascii_lowercase();
-        s.contains("sing-tun") || s.contains("wintun")
+        s.contains("yap-xfish") || s.contains("wintun")
     })
 }
 

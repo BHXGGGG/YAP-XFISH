@@ -37,15 +37,16 @@ async fn main() -> Result<()> {
     app::maybe_migrate_legacy(&data_dir);
 
     let (app_config, profile) = app::load_or_init(&data_dir)?;
+    app::maybe_migrate_mihomo_core(&app_config.core_binary);
     let state = Arc::new(AppState::new(app_config, profile, data_dir.clone()));
 
-    // 默认落盘日志：data/logs/yap-xfish.log（应用层）+ sing-box.log（核心 output）。
+    // 应用与 Mihomo API 日志统一落盘到 data/logs/yap-xfish.log。
     system::log_file::init(&data_dir);
     state.log_with(
         "app",
         "info",
         format!(
-            "日志目录: {} （yap-xfish.log / sing-box.log）",
+            "日志目录: {} （yap-xfish.log）",
             data_dir.join("logs").display()
         ),
     );
@@ -57,7 +58,6 @@ async fn main() -> Result<()> {
     system::autostart::apply_autostart(state.config.read().await.autostart);
 
     // 若启用 TUN 但未以管理员身份运行：弹窗让用户选择提权重启或关闭 TUN。
-    // 不再仅打日志——避免启动时静默失败，sing-box 报 "Access is denied" (错误 59)。
     if state.config.read().await.enable_tun && !crate::system::admin::is_elevated() {
         let app_config_path = data_dir.join("app_config.json");
         crate::system::admin::prompt_tun_elevate_or_disable(&app_config_path);
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
     // 启动订阅定时调度（周期 / 自定义 Cron 自动更新）
     subscription::scheduler::start(state.clone());
 
-    // 会话上下行累计：轮询 sing-box Clash /traffic 并 WS 推送
+    // 会话上下行累计：轮询 Mihomo /connections 并 WS 推送。
     core::traffic_poller::start(state.clone());
 
     // 启动系统托盘（独立线程 + Win32 消息泵）与托盘命令处理循环。
@@ -90,12 +90,13 @@ async fn main() -> Result<()> {
         thread_id.clone(),
     ));
 
-    // 程序启动后默认启动本地代理（sing-box 核心）。
+    // 程序启动后默认启动本地代理（Mihomo 核心）。
     // 失败不阻断 WebUI / 托盘：用户仍可在面板里手动重试。
     if let Err(e) = auto_start_local_proxy(&state).await {
         eprintln!("[proxy] 启动时自动启动本地代理失败: {e}");
         state.log_with("core", "error", format!("启动时自动启动本地代理失败: {e}"));
     }
+    latency::start_selected_node_monitor(state.clone());
 
     // 首次启动 / 尚未配置订阅：自动打开管理面板到默认浏览器。
     // 不会重复打开：仅在 `subscriptions.json` 缺失或为空时触发；后续托盘左键 / 菜单项保持原行为。
@@ -103,47 +104,37 @@ async fn main() -> Result<()> {
         spawn_open_webui_when_ready(state.clone());
     }
 
-    // 若配置要求系统代理，则在核心起来后同步 WinINET。
-    {
-        let cfg = state.config.read().await;
-        if cfg.system_proxy {
-            match crate::system::sysproxy::enable(cfg.proxy_port) {
-                Ok(_) => {
-                    println!(
-                        "[proxy] 系统代理已启用 → 127.0.0.1:{}",
-                        cfg.proxy_port
-                    );
-                    state.log_with(
-                        "config",
-                        "info",
-                        format!("启动时启用系统代理 → 127.0.0.1:{}", cfg.proxy_port),
-                    );
-                }
-                Err(e) => {
-                    eprintln!("[proxy] 启动时启用系统代理失败: {e}");
-                    state.log_with("config", "error", format!("启动时启用系统代理失败: {e}"));
-                }
-            }
-        }
-    }
-
     // 运行 HTTP 服务（浏览器/托盘关闭不影响后台）。ctrl_c 退出。
+    let server_state = state.clone();
     tokio::select! {
-        r = server::run(state) => {
+        r = server::run(server_state) => {
+            let _mutation = state.mutation.lock().await;
             if let Err(e) = r {
                 eprintln!("[proxy] 服务错误: {e}");
             }
+            if state.config.read().await.system_proxy {
+                let _ = crate::system::sysproxy::disable();
+            }
+            let _ = state.core.stop().await;
         }
         _ = tokio::signal::ctrl_c() => {
+            let _mutation = state.mutation.lock().await;
             println!("[proxy] 收到退出信号，停止后台…");
+            if state.config.read().await.system_proxy {
+                let _ = crate::system::sysproxy::disable();
+            }
+            if let Err(e) = state.core.stop().await {
+                eprintln!("[proxy] 关闭 Mihomo 失败: {e}");
+            }
         }
     }
     Ok(())
 }
 
-/// 程序启动时默认拉起 sing-box 本地代理。
+/// 程序启动时默认拉起 Mihomo 本地代理。
 /// 逻辑与 `/api/core/start` 对齐：用 visible_profile 渲染配置并更新 RuntimeStatus。
 async fn auto_start_local_proxy(state: &Arc<AppState>) -> Result<()> {
+    let _mutation = state.mutation.lock().await;
     let p = state.visible_profile().await;
     let cfg = state.config.read().await.clone();
     let node_name = p

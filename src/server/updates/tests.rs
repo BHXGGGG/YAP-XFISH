@@ -7,6 +7,22 @@ use axum::{
 };
 use std::io::Write;
 
+#[test]
+fn core_manifest_accepts_legacy_hash_and_forces_full_download_when_it_differs() {
+    let legacy = UpdateManifest {
+        mihomo_sha256: None,
+        singbox_sha256: Some("mihomo-digest".into()),
+    };
+    assert!(!mihomo_changed(Some(legacy), Some("MIHOMO-DIGEST")));
+
+    let legacy_app = UpdateManifest {
+        mihomo_sha256: None,
+        singbox_sha256: Some("mihomo-digest".into()),
+    };
+    assert!(mihomo_changed(Some(legacy_app), Some("old-sing-box-digest")));
+    assert!(mihomo_changed(None, Some("mihomo-digest")));
+}
+
 /// 模拟 GitHub 的 `releases/latest`：302 到 tag 页面。
 fn redirects_to(tag: &str) -> impl IntoResponse {
     (
@@ -60,7 +76,7 @@ fn builds_asset_names_from_the_tag() {
     assert_eq!(update.size, 0);
     assert_eq!(
         result.full_asset.unwrap().name,
-        "yap-xfish-v0.2.0-windows-amd64.zip"
+        "yap-xfish-v0.2.0-mihomo-windows-amd64.zip"
     );
 }
 
@@ -218,8 +234,8 @@ fn builds_asset_download_urls_from_the_tag() {
         "https://github.com/BHXGGGG/YAP-XFISH/releases/download/v0.1.51/yap-xfish-v0.1.51-update.zip"
     );
     assert_eq!(
-        release_asset_url("v0.1.51", "windows-amd64.zip"),
-        "https://github.com/BHXGGGG/YAP-XFISH/releases/download/v0.1.51/yap-xfish-v0.1.51-windows-amd64.zip"
+        release_asset_url("v0.1.51", "mihomo-windows-amd64.zip"),
+        "https://github.com/BHXGGGG/YAP-XFISH/releases/download/v0.1.51/yap-xfish-v0.1.51-mihomo-windows-amd64.zip"
     );
 }
 
@@ -270,7 +286,7 @@ fn extracts_only_allowlisted_files() {
         for (name, body) in [
             ("yap-xfish.exe", "app"),
             ("libcronet.dll", "dll"),
-            ("sing-box.exe", "core"),
+            ("mihomo.exe", "core"),
             ("../evil.exe", "evil"),
             ("update.json", "{}"),
         ] {
@@ -287,7 +303,7 @@ fn extracts_only_allowlisted_files() {
         vec!["yap-xfish.exe".to_string(), "libcronet.dll".to_string()]
     );
     assert!(stage.join("yap-xfish.exe").exists());
-    assert!(!stage.join("sing-box.exe").exists());
+    assert!(!stage.join("mihomo.exe").exists());
     assert!(!stage.join("evil.exe").exists());
     let _ = fs::remove_dir_all(&dir);
 }
@@ -297,27 +313,176 @@ fn extracts_only_allowlisted_files() {
 fn generated_script_replaces_files_in_a_sandbox() {
     let dir = std::env::temp_dir().join(format!("yap-update-script-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
+    for full in [false, true] {
+        let install = dir.join(if full { "完整 安装's" } else { "小包 安装's" });
+        let data = install.join("data");
+        let update = data.join("update");
+        let stage = update.join("stage");
+        fs::create_dir_all(&stage).unwrap();
+        for name in ["yap-xfish.exe", "mihomo.exe", "libcronet.dll", "README.txt"] {
+            fs::write(install.join(name), format!("old {name}")).unwrap();
+        }
+        let user_files = ["app_config.json", "profile.json", "subscriptions.json", "rules.json", "cache.db"];
+        for name in user_files {
+            fs::write(data.join(name), format!("user {name}")).unwrap();
+        }
+        let zip_path = update.join(if full { "full.zip" } else { "update.zip" });
+        let mut writer = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+        for name in ["yap-xfish.exe", "mihomo.exe", "libcronet.dll", "README.txt"] {
+            if name == "mihomo.exe" && !full { continue; }
+            writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(format!("new {name}").as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+        extract_zip(&zip_path, &stage, full).unwrap();
+        let script = update.join("apply.ps1");
+        fs::write(&script, format!("\u{feff}{}", build_script(&install, &stage, 999_999, &update, true))).unwrap();
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        for name in ["yap-xfish.exe", "mihomo.exe", "libcronet.dll", "README.txt"] {
+            let version = if name == "mihomo.exe" && !full { "old" } else { "new" };
+            assert_eq!(fs::read_to_string(install.join(name)).unwrap(), format!("{version} {name}"));
+        }
+        for name in user_files {
+            assert_eq!(fs::read_to_string(data.join(name)).unwrap(), format!("user {name}"));
+        }
+        assert!(!stage.exists());
+        assert!(!zip_path.exists());
+        assert!(!update.join("install-error.txt").exists());
+        assert_eq!(fs::read_dir(&update).unwrap().count(), 1); // apply.ps1 only
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "runs PowerShell with a locked installation file"]
+fn generated_script_rolls_back_when_a_file_is_locked() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let dir = std::env::temp_dir().join(format!("yap-update-rollback-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let install = dir.join("install");
+    let stage = dir.join("stage");
+    fs::create_dir_all(&install).unwrap();
+    fs::create_dir_all(&stage).unwrap();
+    for name in ["yap-xfish.exe", "mihomo.exe", "README.txt"] {
+        fs::write(install.join(name), format!("old {name}")).unwrap();
+        fs::write(stage.join(name), format!("new {name}")).unwrap();
+    }
+    fs::write(stage.join("libcronet.dll"), "new dll").unwrap();
+    fs::write(dir.join("update.zip"), "downloaded package").unwrap();
+    let data = install.join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("app_config.json"), "user config").unwrap();
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ: reads work, replacement is blocked.
+        .open(install.join("mihomo.exe"))
+        .unwrap();
+    let script = dir.join("apply.ps1");
+    fs::write(
+        &script,
+        format!("\u{feff}{}", build_script(&install, &stage, 999_999, &dir, true)),
+    ).unwrap();
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .output()
+        .unwrap();
+    drop(locked);
+
+    assert!(!output.status.success(), "a failed installation must report failure");
+    for name in ["yap-xfish.exe", "mihomo.exe", "README.txt"] {
+        assert_eq!(fs::read_to_string(install.join(name)).unwrap(), format!("old {name}"));
+        assert!(stage.join(name).exists());
+    }
+    assert!(!install.join("libcronet.dll").exists());
+    assert!(dir.join("update.zip").exists());
+    assert!(fs::read_to_string(dir.join("install-error.txt")).unwrap().contains("mihomo.exe"));
+    assert_eq!(fs::read_to_string(data.join("app_config.json")).unwrap(), "user config");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn full_update_requires_the_core_binary() {
+    let dir = std::env::temp_dir().join(format!("yap-update-incomplete-{}", std::process::id()));
+    let stage = dir.join("stage");
+    fs::create_dir_all(&stage).unwrap();
+    let zip_path = dir.join("full.zip");
+    let mut writer = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+    writer.start_file("yap-xfish.exe", zip::write::SimpleFileOptions::default()).unwrap();
+    writer.write_all(b"app").unwrap();
+    writer.finish().unwrap();
+    let error = extract_zip(&zip_path, &stage, true).unwrap_err();
+    assert!(error.to_string().contains("mihomo.exe"));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+#[ignore = "runs PowerShell"]
+fn generated_script_stops_if_the_old_process_is_still_running() {
+    let dir = std::env::temp_dir().join(format!("yap-update-wait-{}", std::process::id()));
     let install = dir.join("install");
     let stage = dir.join("stage");
     fs::create_dir_all(&install).unwrap();
     fs::create_dir_all(&stage).unwrap();
     fs::write(install.join("yap-xfish.exe"), "old").unwrap();
     fs::write(stage.join("yap-xfish.exe"), "new").unwrap();
-    fs::write(stage.join("libcronet.dll"), "dll").unwrap();
     let script = dir.join("apply.ps1");
-    // 999999 不存在，脚本会立即越过等待；skip_start 避免在测试里拉起进程
-    fs::write(&script, build_script(&install, &stage, 999_999, &dir, true)).unwrap();
-
-    let status = std::process::Command::new("powershell.exe")
+    let content = build_script(&install, &stage, std::process::id(), &dir, true)
+        .replace("$i -lt 240", "$i -lt 1");
+    fs::write(&script, format!("\u{feff}{content}")).unwrap();
+    let output = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
-    assert_eq!(fs::read_to_string(install.join("yap-xfish.exe")).unwrap(), "new");
-    assert!(install.join("libcronet.dll").exists());
-    assert!(!stage.exists());
-    let _ = fs::remove_dir_all(&dir);
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(install.join("yap-xfish.exe")).unwrap(), "old");
+    assert_eq!(fs::read_to_string(stage.join("yap-xfish.exe")).unwrap(), "new");
+    assert!(fs::read_to_string(dir.join("install-error.txt")).unwrap().contains("旧进程未退出"));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+#[ignore = "runs PowerShell and compiles a test executable with rustc"]
+fn generated_script_restarts_the_updated_executable() {
+    let dir = std::env::temp_dir().join(format!("yap-update-restart-{}", std::process::id()));
+    let install = dir.join("install");
+    let stage = dir.join("stage");
+    fs::create_dir_all(&install).unwrap();
+    fs::create_dir_all(&stage).unwrap();
+    let source = dir.join("restart.rs");
+    fs::write(&source, r#"fn main() {
+        let readme = std::fs::read("README.txt").unwrap();
+        std::fs::write("restarted.txt", readme).unwrap();
+    }"#).unwrap();
+    let output = std::process::Command::new("rustc")
+        .arg(&source)
+        .arg("-o").arg(stage.join("yap-xfish.exe"))
+        .output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    fs::write(install.join("yap-xfish.exe"), "old").unwrap();
+    fs::write(stage.join("README.txt"), "updated readme").unwrap();
+    let script = dir.join("apply.ps1");
+    fs::write(&script, format!("\u{feff}{}", build_script(&install, &stage, 999_999, &dir, false))).unwrap();
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let marker = install.join("restarted.txt");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(fs::read_to_string(marker).unwrap(), "updated readme");
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[tokio::test]
@@ -339,7 +504,7 @@ async fn live_download_verifies_and_extracts() {
         .unwrap()
     {
         assert!(
-            try_download(&client, &release_asset_url(&tag, "windows-amd64.zip"), &zip_path)
+            try_download(&client, &release_asset_url(&tag, "mihomo-windows-amd64.zip"), &zip_path)
                 .await
                 .unwrap()
         );

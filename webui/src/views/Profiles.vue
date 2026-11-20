@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
-import { markTesting, clearTesting } from '../latency'
+import { markTesting, clearTesting, testingCount } from '../latency'
 
 const modes: [string, string][] = [['global', '全局'], ['rule', '规则'], ['direct', '直连']]
 
@@ -90,6 +90,7 @@ async function testOne(id: string, ev?: Event) {
       <button :class="{ active: sortByLatency }"
               @click="sortByLatency = !sortByLatency">按延迟排序</button>
       <button class="primary" style="margin-left:auto" @click="testAll">测试全部延迟</button>
+      <span v-if="testingCount" class="meta-testing" role="status">剩余 {{ testingCount }} 个节点测速中</span>
     </div>
 
     <div v-if="!visibleNodes.length" class="empty">

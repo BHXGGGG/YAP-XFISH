@@ -6,7 +6,6 @@ pub mod mem;
 pub mod msgbox;
 pub mod netinfo;
 pub mod notify;
-pub mod process_check;
 pub mod single_instance;
 pub mod sysproxy;
 pub mod tray;

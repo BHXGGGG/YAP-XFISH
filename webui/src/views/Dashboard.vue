@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { store, toast } from '../store'
 import { api } from '../api'
-import { markTesting, clearTesting } from '../latency'
+import { markTesting, clearTesting, testingCount } from '../latency'
 import Modal from '../components/Modal.vue'
 import AddSubscriptionForm from '../components/AddSubscriptionForm.vue'
 import DashboardTop from '../components/DashboardTop.vue'
@@ -258,6 +258,7 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
         <button :class="{ active: sortByLatency }"
                 @click="sortByLatency = !sortByLatency">按延迟排序</button>
         <button class="primary" @click="testAll">测试全部延迟</button>
+        <span v-if="testingCount" class="meta-testing" role="status">剩余 {{ testingCount }} 个节点测速中</span>
       </div>
     </div>
 
@@ -334,7 +335,7 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 
     <Modal :open="showElevateDialog" title="需要管理员权限" subtitle="TUN 模式需要管理员权限才能创建虚拟网卡" icon="⚡" :width="440" @close="onElevateCancel">
       <div class="elevate-body">
-        <p>当前未以管理员身份运行，启用 TUN 后 sing-box 无法创建虚拟网卡。</p>
+         <p>当前未以管理员身份运行，启用 TUN 后 Mihomo 无法创建虚拟网卡。</p>
         <p>是否立即<strong>以管理员身份重新启动</strong> YAP-XFISH？重启后自动启用 TUN。</p>
         <div class="elevate-actions">
           <button class="primary elevate-btn" @click="onElevateConfirm">以管理员身份运行</button>

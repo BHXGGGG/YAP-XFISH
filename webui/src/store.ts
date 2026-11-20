@@ -55,6 +55,20 @@ export const store = reactive({
   promptFirstRun: false,
 })
 
+export function updateProfile(profile: typeof store.profile) {
+  const previous = new Map(store.profile.nodes.map((node) => [node.id, node]))
+  const nodes = profile.nodes.map((node) => {
+    const current = previous.get(node.id)
+    if (!current) return node
+    // 保留节点对象，让测速定时器和页面刷新继续指向同一份状态。
+    for (const key of Object.keys(current)) {
+      if (!(key in node) && key !== 'testing' && key !== '_testingTimer') delete current[key]
+    }
+    return Object.assign(current, node)
+  })
+  Object.assign(store.profile, profile, { nodes })
+}
+
 let toastTimer: any = null
 export function toast(msg: string) {
   store.toast = msg
