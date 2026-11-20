@@ -1,6 +1,6 @@
 [package]
 name = "yap-xfish"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 default-run = "yap-xfish"
 description = "YAP-XFISH — Windows Mihomo 代理客户端（WebUI + 托盘）"
