@@ -658,6 +658,21 @@ Remove-Item -LiteralPath (Join-Path $updateDir 'install-error.txt') -Force -Erro
     )
 }
 
+#[cfg(windows)]
+fn installer_command(script: &Path) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        // DETACHED_PROCESS 会导致 Windows PowerShell 不执行脚本就退出。
+        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
+}
+
 /// 启动更新脚本并退出当前进程，让脚本完成文件替换后重启程序。
 pub async fn install_update(State(state): State<Arc<AppState>>) -> AppResult<Json<serde_json::Value>> {
     if progress_snapshot().state != "ready" {
@@ -670,19 +685,12 @@ pub async fn install_update(State(state): State<Arc<AppState>>) -> AppResult<Jso
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        let mut cmd = std::process::Command::new("powershell.exe");
-        cmd.arg("-NoProfile")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass")
-            .arg("-File")
-            .arg(&script)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            // CREATE_NO_WINDOW | DETACHED_PROCESS
-            .creation_flags(0x0800_0000 | 0x0000_0008);
-        cmd.spawn().context("启动更新脚本失败")?;
+        let log = File::create(dir.join("install.log")).context("无法创建更新安装日志")?;
+        installer_command(&script)
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .spawn()
+            .context("启动更新脚本失败")?;
     }
     set_progress(|p| p.state = "installing");
     state.log_with("app", "info", "正在安装更新，程序即将重启…");

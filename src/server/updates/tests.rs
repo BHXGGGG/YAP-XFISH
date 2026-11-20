@@ -308,8 +308,8 @@ fn extracts_only_allowlisted_files() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[cfg(windows)]
 #[test]
-#[ignore = "runs PowerShell"]
 fn generated_script_replaces_files_in_a_sandbox() {
     let dir = std::env::temp_dir().join(format!("yap-update-script-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -337,11 +337,7 @@ fn generated_script_replaces_files_in_a_sandbox() {
         extract_zip(&zip_path, &stage, full).unwrap();
         let script = update.join("apply.ps1");
         fs::write(&script, format!("\u{feff}{}", build_script(&install, &stage, 999_999, &update, true))).unwrap();
-        let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(&script)
-            .output()
-            .unwrap();
+        let output = installer_command(&script).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         for name in ["yap-xfish.exe", "mihomo.exe", "libcronet.dll", "README.txt"] {
             let version = if name == "mihomo.exe" && !full { "old" } else { "new" };
@@ -389,11 +385,7 @@ fn generated_script_rolls_back_when_a_file_is_locked() {
         &script,
         format!("\u{feff}{}", build_script(&install, &stage, 999_999, &dir, true)),
     ).unwrap();
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .output()
-        .unwrap();
+    let output = installer_command(&script).output().unwrap();
     drop(locked);
 
     assert!(!output.status.success(), "a failed installation must report failure");
@@ -423,6 +415,7 @@ fn full_update_requires_the_core_binary() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "runs PowerShell"]
 fn generated_script_stops_if_the_old_process_is_still_running() {
@@ -437,11 +430,7 @@ fn generated_script_stops_if_the_old_process_is_still_running() {
     let content = build_script(&install, &stage, std::process::id(), &dir, true)
         .replace("$i -lt 240", "$i -lt 1");
     fs::write(&script, format!("\u{feff}{content}")).unwrap();
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .output()
-        .unwrap();
+    let output = installer_command(&script).output().unwrap();
     assert!(!output.status.success());
     assert_eq!(fs::read_to_string(install.join("yap-xfish.exe")).unwrap(), "old");
     assert_eq!(fs::read_to_string(stage.join("yap-xfish.exe")).unwrap(), "new");
@@ -449,6 +438,7 @@ fn generated_script_stops_if_the_old_process_is_still_running() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "runs PowerShell and compiles a test executable with rustc"]
 fn generated_script_restarts_the_updated_executable() {
@@ -470,11 +460,11 @@ fn generated_script_restarts_the_updated_executable() {
     fs::write(install.join("yap-xfish.exe"), "old").unwrap();
     fs::write(stage.join("README.txt"), "updated readme").unwrap();
     let script = dir.join("apply.ps1");
-    fs::write(&script, format!("\u{feff}{}", build_script(&install, &stage, 999_999, &dir, false))).unwrap();
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .output().unwrap();
+    // 测试程序写完标记后还需退出，才能清理其可执行文件。
+    let content = build_script(&install, &stage, 999_999, &dir, false)
+        .replace("-WindowStyle Hidden", "-WindowStyle Hidden -Wait");
+    fs::write(&script, format!("\u{feff}{content}")).unwrap();
+    let output = installer_command(&script).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let marker = install.join("restarted.txt");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);

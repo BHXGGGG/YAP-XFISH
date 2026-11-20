@@ -1,6 +1,11 @@
-YAP-XFISH v0.2.3 —— Windows Mihomo 代理客户端（自包含分发）
+YAP-XFISH v0.2.4 —— Windows Mihomo 代理客户端（自包含分发）
 
 【本版更新】
+- 修复自动更新下载完成后程序退出，却没有替换文件或重启的问题。
+- 安装脚本输出保存到 data/update/install.log，便于定位安装失败。
+- v0.2.3 及更早版本需要手动更新一次到本版；退出旧版后覆盖程序文件，保留 data 目录。
+
+【v0.2.3】
 - 首页布局更紧凑：外网 IP、内网 IP、系统代理与 TUN 开关合并到网络信息卡片，出站模式按钮移到仪表盘标题旁。
 - 流量统计显示最近 10 分钟的上传、下载曲线，以及速率、累计流量、活跃连接和内核占用；移除重复内存卡片与顶部状态提示。
 - 测试全部延迟按钮默认白色，测试期间显示蓝色。
@@ -118,5 +123,5 @@ YAP-XFISH v0.2.3 —— Windows Mihomo 代理客户端（自包含分发）
 - TUN 开启：图标左上角亮黄色圆点
 
 【版本】
-- YAP-XFISH v0.2.3
+- YAP-XFISH v0.2.4
 - 本包附带 Mihomo Meta v1.19.34（windows/amd64 compatible；libcronet.dll 供 naive 协议使用）
