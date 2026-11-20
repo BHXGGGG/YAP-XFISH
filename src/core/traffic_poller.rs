@@ -45,6 +45,7 @@ pub fn start(state: Arc<AppState>) {
                         let mut st = state.status.write().await;
                         st.up_rate = 0;
                         st.down_rate = 0;
+                        st.active_connections = 0;
                     }
                     let (up, down) = {
                         let st = state.status.read().await;
@@ -55,6 +56,7 @@ pub fn start(state: Arc<AppState>) {
                         down,
                         up_rate: 0,
                         down_rate: 0,
+                        active_connections: 0,
                     });
                     // 停止时立刻落盘，避免进程异常退出丢今日数据。
                     crate::core::traffic_history::record_tick(&state).await;
@@ -92,6 +94,7 @@ pub fn start(state: Arc<AppState>) {
                 // INTERVAL=1s → 本秒字节 ≈ B/s
                 st.up_rate = du;
                 st.down_rate = dd;
+                st.active_connections = snap.connections.len();
                 (st.traffic_up, st.traffic_down)
             };
             state.emit(AppEvent::Traffic {
@@ -99,6 +102,7 @@ pub fn start(state: Arc<AppState>) {
                 down,
                 up_rate: du,
                 down_rate: dd,
+                active_connections: snap.connections.len(),
             });
 
             history_ticks = history_ticks.wrapping_add(1);

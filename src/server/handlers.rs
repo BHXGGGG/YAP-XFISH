@@ -22,6 +22,7 @@ pub struct StatusResp {
     pub up_rate: u64,
     /// 下行瞬时速率 B/s。
     pub down_rate: u64,
+    pub active_connections: usize,
     pub node_count: usize,
     /// 当前进程是否以管理员身份运行（TUN 需要）。
     pub elevated: bool,
@@ -34,7 +35,7 @@ pub struct StatusResp {
 }
 
 pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<StatusResp>> {
-    let (stored_running, mode, current_node, traffic_up, traffic_down, up_rate, down_rate) = {
+    let (stored_running, mode, current_node, traffic_up, traffic_down, up_rate, down_rate, active_connections) = {
         let st = state.status.read().await;
         (
             st.running,
@@ -44,6 +45,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<Status
             st.traffic_down,
             st.up_rate,
             st.down_rate,
+            st.active_connections,
         )
     };
     let mem = crate::system::mem::memory_info();
@@ -69,6 +71,7 @@ pub async fn status(State(state): State<Arc<AppState>>) -> AppResult<Json<Status
         traffic_down,
         up_rate,
         down_rate,
+        active_connections: if running { active_connections } else { 0 },
         node_count: state.visible_profile().await.nodes.len(),
         elevated: crate::system::admin::is_elevated(),
         mem_mb: (mem.working_set_bytes as f32) / (1024.0 * 1024.0),
@@ -157,90 +160,66 @@ pub async fn set_node_detour(
     Path(id): Path<String>,
     Json(req): Json<SetDetourReq>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let detour = req.detour.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    apply_detours(&state, vec![SetNodeDetourReq { id: id.clone(), detour: detour.clone() }]).await?;
+    Ok(Json(serde_json::json!({ "ok": true, "id": id, "detour": detour })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SetNodeDetourReq {
+    pub id: String,
+    pub detour: Option<String>,
+}
+
+pub async fn set_node_detours(
+    State(state): State<Arc<AppState>>,
+    Json(changes): Json<Vec<SetNodeDetourReq>>,
+) -> AppResult<Json<serde_json::Value>> {
+    apply_detours(&state, changes).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn apply_detours(state: &Arc<AppState>, changes: Vec<SetNodeDetourReq>) -> AppResult<()> {
     let _mutation = state.mutation.lock().await;
     let previous = state.profile.read().await.clone();
-    let detour_raw = req
-        .detour
-        .as_ref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    {
-        let mut p = state.profile.write().await;
-        let exit = p
-            .nodes
-            .iter()
-            .find(|n| n.id == id)
-            .cloned()
-            .ok_or_else(|| AppError(anyhow::anyhow!("节点不存在: {}", id)))?;
-
-        if let Some(ref d) = detour_raw {
-            if d == &id {
+    let mut next = previous.clone();
+    for change in &changes {
+        let node = next.nodes.iter_mut().find(|n| n.id == change.id)
+            .ok_or_else(|| AppError(anyhow::anyhow!("节点不存在: {}", change.id)))?;
+        node.detour = Some(change.detour.as_deref().unwrap_or("").trim().to_string());
+        if let Some(extra) = node.extra.as_mut().and_then(serde_json::Value::as_object_mut) {
+            extra.remove("dialer-proxy");
+            extra.remove("detour");
+        }
+    }
+    // 先应用整批修改再校验，允许一笔保存中调整链路顺序。
+    for change in &changes {
+        let node = next.nodes.iter().find(|n| n.id == change.id).unwrap();
+        if let Some(detour) = node.detour() {
+            if detour == node.id {
                 return Err(AppError(anyhow::anyhow!("前置代理不能是自身")));
             }
-            let entry = p
-                .nodes
-                .iter()
-                .find(|n| &n.id == d)
-                .ok_or_else(|| AppError(anyhow::anyhow!("前置节点不存在: {}", d)))?;
-
-            // UDP/QUIC 出口经 detour 拨号在多数前置上会直接超时（实测 hy2 链式）。
-            let exit_k = exit.kind.to_ascii_lowercase();
-            if matches!(
-                exit_k.as_str(),
-                "hysteria" | "hysteria2" | "hy2" | "tuic" | "wireguard" | "wg"
-            ) {
-                return Err(AppError(anyhow::anyhow!(
-                    "出口「{}」是 {}（UDP/QUIC），无法经前置链式拨号。请换 VLESS/VMess/Trojan/SS 等 TCP 出口，或不要给该节点设前置。",
-                    exit.name,
-                    exit.kind
-                )));
+            if !next.nodes.iter().any(|n| n.id == detour) {
+                return Err(AppError(anyhow::anyhow!("前置节点不存在: {}", detour)));
             }
-
-            if !crate::config::mihomo::detour_is_safe(&p.nodes, &id, d) {
-                return Err(AppError(anyhow::anyhow!(
-                    "设置该前置会形成代理环，已拒绝"
-                )));
+            if matches!(node.kind.to_ascii_lowercase().as_str(), "hysteria" | "hysteria2" | "hy2" | "tuic" | "wireguard" | "wg") {
+                return Err(AppError(anyhow::anyhow!("出口「{}」是 {}（UDP/QUIC），无法经前置链式拨号。请换 VLESS/VMess/Trojan/SS 等 TCP 出口。", node.name, node.kind)));
             }
-
-            let _ = entry; // 已校验存在
-        }
-
-        let name = exit.name.clone();
-        if let Some(n) = p.nodes.iter_mut().find(|n| n.id == id) {
-            n.detour = Some(detour_raw.clone().unwrap_or_default());
-            if let Some(extra) = n.extra.as_mut().and_then(serde_json::Value::as_object_mut) {
-                extra.remove("dialer-proxy");
-                extra.remove("detour");
+            if !crate::config::mihomo::detour_is_safe(&next.nodes, &node.id, detour) {
+                return Err(AppError(anyhow::anyhow!("链路存在循环、缺失前置或超过 32 跳，已拒绝")));
             }
         }
-        crate::config::manager::save_profile(&state.data_dir, &p)?;
-        let detour_label = detour_raw
-            .as_ref()
-            .and_then(|d| {
-                p.nodes
-                    .iter()
-                    .find(|n| &n.id == d)
-                    .map(|n| format!("{} ({})", n.name, d))
-            })
-            .unwrap_or_else(|| "无".into());
-        state.log(
-            "info",
-            format!("设置链式代理: {} → 前置={}", name, detour_label),
-        );
     }
-
-    if let Err(error) = regen_config(&state).await {
+    crate::config::manager::save_profile(&state.data_dir, &next)?;
+    *state.profile.write().await = next;
+    if let Err(error) = regen_config(state).await {
         *state.profile.write().await = previous.clone();
         crate::config::manager::save_profile(&state.data_dir, &previous)?;
         return Err(error);
     }
+    state.log("info", format!("已更新 {} 个节点的链式前置", changes.len()));
     state.broadcast_profile().await;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "id": id,
-        "detour": detour_raw,
-    })))
+    Ok(())
 }
 
 pub async fn set_mode(

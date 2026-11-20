@@ -144,6 +144,8 @@ pub struct RuntimeStatus {
     pub up_rate: u64,
     /// 最近一拍下行速率（B/s）；代理停止时为 0。
     pub down_rate: u64,
+    /// 核心当前的全部连接数，包含直连。
+    pub active_connections: usize,
 }
 
 /// 通过 WebSocket 广播给所有已连接浏览器的事件。
@@ -163,6 +165,8 @@ pub enum AppEvent {
         up_rate: u64,
         #[serde(default)]
         down_rate: u64,
+        #[serde(default)]
+        active_connections: usize,
     },
     Log {
         level: String,
@@ -344,6 +348,7 @@ impl AppState {
         st.traffic_down = 0;
         st.up_rate = 0;
         st.down_rate = 0;
+        st.active_connections = 0;
     }
 pub async fn broadcast_profile(&self) {
         let p = self.visible_profile().await;

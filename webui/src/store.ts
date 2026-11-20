@@ -12,6 +12,7 @@ export const store = reactive({
     traffic_down: 0,
     up_rate: 0,
     down_rate: 0,
+    active_connections: 0,
     node_count: 0,
     elevated: false,
     mem_mb: 0,

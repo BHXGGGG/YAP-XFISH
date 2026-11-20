@@ -96,6 +96,46 @@ async fn imported_detours_are_visible_and_clearing_survives_subscription_refresh
     }
 }
 
+#[tokio::test]
+async fn batch_detours_validate_the_whole_path_before_saving() {
+    let state = state(AppProfile {
+        nodes: ["a", "b", "c"].into_iter().map(|id| Node {
+            id: id.into(), name: id.into(), kind: "http".into(),
+            server: "127.0.0.1".into(), port: 8080, ..Default::default()
+        }).collect(),
+        ..Default::default()
+    }, None);
+    let changes = |pairs: &[(&str, Option<&str>)]| pairs.iter().map(|(id, detour)| SetNodeDetourReq {
+        id: id.to_string(), detour: detour.map(str::to_string),
+    }).collect();
+    apply_detours(&state, changes(&[("b", Some("a")), ("c", Some("b"))])).await.unwrap();
+    let saved = manager::load_profile(&state.data_dir).unwrap();
+    assert_eq!(saved.nodes[2].detour(), Some("b"));
+    assert_eq!(mihomo::render_provider(&saved).unwrap()["proxies"][2]["dialer-proxy"], "YAP-NODE-b");
+    // 最终路径为 b → a → c；逐条更新会先形成 a ↔ b 环。
+    apply_detours(&state, changes(&[("a", Some("b")), ("b", None), ("c", Some("a"))])).await.unwrap();
+    let before = serde_json::to_value(manager::load_profile(&state.data_dir).unwrap()).unwrap();
+    for invalid in [
+        changes(&[("a", None), ("c", Some("missing"))]),
+        changes(&[("b", Some("c"))]),
+        changes(&[("a", None), ("missing", None)]),
+    ] {
+        assert!(apply_detours(&state, invalid).await.is_err());
+        assert_eq!(serde_json::to_value(&*state.profile.read().await).unwrap(), before);
+        assert_eq!(serde_json::to_value(manager::load_profile(&state.data_dir).unwrap()).unwrap(), before);
+    }
+    state.profile.write().await.nodes[2].kind = "hysteria2".into();
+    assert!(apply_detours(&state, changes(&[("c", Some("a"))])).await.unwrap_err().to_string().contains("UDP/QUIC"));
+    let before_failure = serde_json::to_value(&*state.profile.read().await).unwrap();
+    assert!(apply_detours(&state, changes(&[("c", None)])).await.unwrap_err().to_string().contains("password"));
+    assert_eq!(serde_json::to_value(&*state.profile.read().await).unwrap(), before_failure);
+    assert_eq!(serde_json::to_value(manager::load_profile(&state.data_dir).unwrap()).unwrap(), before_failure);
+    state.profile.write().await.nodes[2].password = Some("test-password".into());
+    apply_detours(&state, changes(&[("c", None)])).await.unwrap();
+    assert!(state.profile.read().await.nodes[2].detour().is_none());
+    std::fs::remove_dir_all(&state.data_dir).unwrap();
+}
+
 async fn check_subscription_selection(binary: Option<PathBuf>) {
     for delete in [false, true] {
         let nodes = ["a", "b"]
