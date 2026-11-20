@@ -1,16 +1,15 @@
 <script setup lang="ts">
-// 仪表盘上半部分（参考 FlClash）：状态 / 网络速度 / 出站模式 / 内网 IP / 订阅 / 服务 / 内存。
+// 仪表盘上半部分：网络信息 / 流量统计 / 订阅 / 服务。
 // 下半部分的节点列表留在 Dashboard.vue。
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { store, toast } from '../store'
 import { api, type DashboardInfo, type ExitIp, type ServiceStatus } from '../api'
+import { appendTrafficSample, trafficChart, TRAFFIC_WINDOW_MS, type TrafficSample } from '../trafficChart'
 
 const emit = defineEmits<{
   (e: 'toggle', key: 'system_proxy' | 'enable_tun', value: boolean): void
   (e: 'navigate', tab: string): void
 }>()
-
-const modes: [string, string][] = [['rule', '规则'], ['global', '全局'], ['direct', '直连']]
 
 /* ---------------- 格式化 ---------------- */
 
@@ -186,65 +185,33 @@ function latencyClass(ms: number | null): string {
   return 'bad'
 }
 
-/* ---------------- 速度迷你图 + 本次会话峰值 ---------------- */
+/* ---------------- 最近十分钟流量 ---------------- */
 
-const RATE_HIST = 48
-const rateUpHist = ref<number[]>(Array(RATE_HIST).fill(0))
-const rateDownHist = ref<number[]>(Array(RATE_HIST).fill(0))
-const peakUp = ref(0)
-const peakDown = ref(0)
-let rateWatchStop: (() => void) | null = null
+const rateHistory = ref<TrafficSample[]>([])
+const rateChart = computed(() => trafficChart(rateHistory.value, nowTick.value))
+const chartTimes = computed(() => [0, 1, 2, 3, 4].map(i =>
+  new Date(nowTick.value - TRAFFIC_WINDOW_MS + i * TRAFFIC_WINDOW_MS / 4)
+    .toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+))
 
-function pushRate(up: number, down: number) {
-  const u = rateUpHist.value.slice(1)
-  u.push(up || 0)
-  rateUpHist.value = u
-  const d = rateDownHist.value.slice(1)
-  d.push(down || 0)
-  rateDownHist.value = d
-  if (up > peakUp.value) peakUp.value = up
-  if (down > peakDown.value) peakDown.value = down
-}
-
-const rateChartUp = computed(() => sparkPaths(rateUpHist.value))
-const rateChartDown = computed(() => sparkPaths(rateDownHist.value))
-
-/** 平滑曲线 + 底部填充；上传、下载各自按自己的峰值缩放 */
-function sparkPaths(arr: number[]): { line: string; area: string } {
-  const w = 240
-  const h = 48
-  const max = Math.max(1, ...arr)
-  const pts = arr.map((v, i) => [
-    (i / Math.max(1, arr.length - 1)) * w,
-    h - (v / max) * (h - 6) - 2,
-  ])
-  let line = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`
-  for (let i = 1; i < pts.length; i++) {
-    const [x0, y0] = pts[i - 1]
-    const [x1, y1] = pts[i]
-    const mx = ((x0 + x1) / 2).toFixed(1)
-    line += ` C${mx},${y0.toFixed(1)} ${mx},${y1.toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`
-  }
-  return { line, area: `${line} L${w},${h} L0,${h} Z` }
-}
-
-/** 花形按钮轮廓（播放 / 暂停键的底） */
-const flowerPath = (() => {
-  const cx = 50, cy = 50, r = 46, amp = 8, petals = 14
-  const n = petals * 2
-  const pts = Array.from({ length: n }, (_, i) => {
-    const a = (i / n) * Math.PI * 2 - Math.PI / 2
-    const rr = i % 2 === 0 ? r : r - amp
-    return [cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]
+function sampleTraffic() {
+  nowTick.value = Date.now()
+  if (!store.connected) return
+  rateHistory.value = appendTrafficSample(rateHistory.value, {
+    at: nowTick.value,
+    up: running.value ? store.status.up_rate : 0,
+    down: running.value ? store.status.down_rate : 0,
   })
-  let d = `M${pts[0][0].toFixed(2)},${pts[0][1].toFixed(2)}`
-  for (let i = 1; i <= n; i++) {
-    const [x0, y0] = pts[(i - 1) % n]
-    const [x1, y1] = pts[i % n]
-    d += ` Q${((x0 + x1) / 2).toFixed(2)},${((y0 + y1) / 2).toFixed(2)} ${x1.toFixed(2)},${y1.toFixed(2)}`
-  }
-  return d + ' Z'
-})()
+}
+
+const trafficStats = computed(() => [
+  { label: '上传速度', tone: 'up', icon: 'M12 19V5m-6 6 6-6 6 6', value: rateParts(running.value ? store.status.up_rate : 0).join(' ') },
+  { label: '下载速度', tone: 'down', icon: 'M12 5v14m-6-6 6 6 6-6', value: rateParts(running.value ? store.status.down_rate : 0).join(' ') },
+  { label: '活跃连接', tone: 'connections', icon: 'M10 7H8a5 5 0 0 0 0 10h2m4-10h2a5 5 0 0 1 0 10h-2M8 12h8', value: String(running.value ? store.status.active_connections : 0) },
+  { label: '上传量', tone: 'up', icon: 'M5 16v4h14v-4M12 15V4m-4 4 4-4 4 4', value: fmtBytes(store.status.traffic_up) },
+  { label: '下载量', tone: 'down', icon: 'M5 16v4h14v-4M12 4v11m-4-4 4 4 4-4', value: fmtBytes(store.status.traffic_down) },
+  { label: '内核占用', tone: 'memory', icon: 'M7 7h10v10H7zM10 10h4v4h-4zM9 3v4m6-4v4M9 17v4m6-4v4M3 9h4m-4 6h4m10-6h4m-4 6h4', value: running.value ? fmtBytes(info.value?.core_mem || 0) : '—' },
+])
 
 /* ---------------- 当前节点 / 订阅 ---------------- */
 
@@ -302,11 +269,6 @@ async function stop() { try { await api.coreStop() } catch (e: any) { toast(e.me
 async function restart() { try { await api.coreRestart() } catch (e: any) { toast(e.message) } }
 function toggleRun() { running.value ? stop() : start() }
 
-async function setMode(m: string) {
-  if (store.profile.mode === m) return
-  try { await api.setMode(m); toast('已切换模式') } catch (e: any) { toast(e.message) }
-}
-
 const sysproxyOn = computed(() => !!(store.config.system_proxy || store.status.system_proxy))
 const tunOn = computed(() => !!(store.config.enable_tun || store.status.enable_tun))
 
@@ -336,11 +298,8 @@ onMounted(() => {
   void loadServices()
   infoTimer = window.setInterval(loadInfo, 5_000)
   serviceTimer = window.setInterval(() => { void loadServices() }, 60_000)
-  tickTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1_000)
-  rateWatchStop = watch(
-    () => [store.status.up_rate, store.status.down_rate] as const,
-    ([u, d]) => pushRate(Number(u) || 0, Number(d) || 0),
-  )
+  sampleTraffic()
+  tickTimer = window.setInterval(sampleTraffic, 1_000)
 })
 
 onBeforeUnmount(() => {
@@ -348,22 +307,30 @@ onBeforeUnmount(() => {
   if (serviceTimer) window.clearInterval(serviceTimer)
   if (tickTimer) window.clearInterval(tickTimer)
   clearExitRetry()
-  if (rateWatchStop) { rateWatchStop(); rateWatchStop = null }
   infoTimer = serviceTimer = tickTimer = null
 })
 </script>
 
 <template>
   <div class="dash-grid">
-    <!-- 状态大卡 -->
+    <!-- 外网 / 内网 IP 与运行状态 -->
     <section class="dt-card status-card">
       <div class="deco" aria-hidden="true"></div>
 
       <header class="st-head">
-        <span class="st-badge" :class="running ? 'on' : 'off'"><i></i>{{ running ? '运行中' : '已停止' }}</span>
+        <div class="st-heading">
+          <span class="card-title">网络信息</span>
+          <span class="st-badge" :class="running ? 'on' : 'off'"><i></i>{{ running ? '运行中' : '已停止' }}</span>
+        </div>
         <div class="st-actions">
           <button class="ghost-btn" :disabled="!running || exitState === 'loading'" title="重新检测出口 IP" @click="loadExit(true)">↻</button>
           <button class="ghost-btn" :disabled="!running" title="重启核心" @click="restart">⏻</button>
+          <button class="power" :title="running ? '停止代理' : '启动代理'" :aria-label="running ? '停止代理' : '启动代理'" @click="toggleRun">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path v-if="running" d="M9 6.6h2.8v10.8H9zM13.2 6.6H16v10.8h-2.8z" />
+              <path v-else d="M9.2 6.1v11.8c0 .5.55.8.98.53l9.1-5.9a.62.62 0 0 0 0-1.04l-9.1-5.9a.62.62 0 0 0-.98.53z" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -373,6 +340,7 @@ onBeforeUnmount(() => {
           <span class="cc">{{ exit?.country || '—' }}</span>
         </div>
         <div class="ip-box">
+          <div class="ip-label">外网 IP</div>
           <div class="ip" :class="ipClass" :title="exit?.ip">{{ ipText }}</div>
           <div class="tags" v-if="exit && running">
             <span v-if="exit.ip_type" class="tag type">{{ TYPE_LABEL[exit.ip_type] || exit.ip_type }}</span>
@@ -381,6 +349,24 @@ onBeforeUnmount(() => {
           </div>
           <div class="org" v-if="exit?.org" :title="exit.org">{{ exit.org }}</div>
         </div>
+      </div>
+
+      <div class="lan-row">
+        <span class="lan-label">内网 IP</span>
+        <span class="lan-ip mono">{{ info?.lan_ip || '—' }}</span>
+        <button v-if="info?.lan_ip" class="mini-action" title="复制内网 IP" @click="copyLan">复制</button>
+        <span class="lan-port">代理端口 <b class="mono">{{ info?.proxy_port ?? '—' }}</b></span>
+      </div>
+
+      <div class="switch-list">
+        <label class="switch-row">
+          <span class="sw-label">系统代理</span>
+          <input type="checkbox" role="switch" class="tgl" :checked="sysproxyOn" @change="onToggle('system_proxy', $event)" />
+        </label>
+        <label class="switch-row">
+          <span class="sw-label">TUN 模式</span>
+          <input type="checkbox" role="switch" class="tgl" :checked="tunOn" @change="onToggle('enable_tun', $event)" />
+        </label>
       </div>
 
       <div class="st-meta">
@@ -397,90 +383,40 @@ onBeforeUnmount(() => {
           <span class="v mono">{{ store.status.node_count }}</span>
         </div>
       </div>
-
-      <div class="power-wrap">
-        <svg class="power-blob" viewBox="0 0 100 100" aria-hidden="true"><path :d="flowerPath" /></svg>
-        <button class="power" :class="running ? 'on' : 'off'" :title="running ? '停止代理' : '启动代理'" @click="toggleRun">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path v-if="running" d="M9 6.6h2.8v10.8H9zM13.2 6.6H16v10.8h-2.8z" />
-            <path v-else d="M9.2 6.1v11.8c0 .5.55.8.98.53l9.1-5.9a.62.62 0 0 0 0-1.04l-9.1-5.9a.62.62 0 0 0-.98.53z" />
-          </svg>
-        </button>
-      </div>
     </section>
 
-    <!-- 网络速度 -->
+    <!-- 流量统计 -->
     <section class="dt-card speed-card">
-      <div class="card-title">网络速度 <span class="sub">仅统计走代理的流量</span></div>
-      <div class="speed-tiles">
-        <div class="speed-tile up">
-          <div class="tile-label"><span class="arrow">↑</span>上传</div>
-          <div class="tile-value">
-            <span class="num">{{ rateParts(store.status.up_rate)[0] }}</span>
-            <span class="unit">{{ rateParts(store.status.up_rate)[1] }}</span>
+      <div class="card-title">流量统计 <span class="sub">速率与流量仅统计代理连接</span></div>
+      <div class="traffic-chart">
+        <div class="chart-head">
+          <span class="chart-range">最近 10 分钟</span>
+          <span class="chart-legend up">上传</span>
+          <span class="chart-legend down">下载</span>
+        </div>
+        <div class="chart-body">
+          <div class="chart-scale mono">
+            <span>{{ rateParts(rateChart.max).join(' ') }}</span>
+            <span>{{ rateParts(rateChart.max / 2).join(' ') }}</span>
+            <span>0</span>
           </div>
-          <div class="tile-meta">
-            <span>累计 {{ fmtBytes(store.status.traffic_up) }}</span>
-            <span>峰值 {{ rateParts(peakUp).join(' ') }}</span>
-          </div>
-          <svg class="tile-spark" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-            <path :d="rateChartUp.area" class="area" />
-            <path :d="rateChartUp.line" class="line" />
+          <svg class="traffic-plot" viewBox="0 0 600 100" preserveAspectRatio="none" role="img" aria-label="最近十分钟上传和下载速率曲线">
+            <path class="chart-grid" d="M0 0H600M0 25H600M0 50H600M0 75H600M0 100H600M0 0V100M150 0V100M300 0V100M450 0V100M600 0V100" />
+            <path :d="rateChart.down" class="chart-line down" />
+            <path :d="rateChart.up" class="chart-line up" />
           </svg>
         </div>
-        <div class="speed-tile down">
-          <div class="tile-label"><span class="arrow">↓</span>下载</div>
-          <div class="tile-value">
-            <span class="num">{{ rateParts(store.status.down_rate)[0] }}</span>
-            <span class="unit">{{ rateParts(store.status.down_rate)[1] }}</span>
+        <div class="chart-times mono"><span v-for="(time, i) in chartTimes" :key="i">{{ time }}</span></div>
+      </div>
+      <div class="traffic-stats">
+        <div v-for="stat in trafficStats" :key="stat.label" class="traffic-stat" :class="stat.tone">
+          <span class="stat-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path :d="stat.icon" /></svg></span>
+          <div class="stat-text">
+            <div class="stat-label">{{ stat.label }}</div>
+            <div class="stat-value mono">{{ stat.value.split(' ')[0] }} <small>{{ stat.value.split(' ')[1] }}</small></div>
           </div>
-          <div class="tile-meta">
-            <span>累计 {{ fmtBytes(store.status.traffic_down) }}</span>
-            <span>峰值 {{ rateParts(peakDown).join(' ') }}</span>
-          </div>
-          <svg class="tile-spark" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-            <path :d="rateChartDown.area" class="area" />
-            <path :d="rateChartDown.line" class="line" />
-          </svg>
         </div>
       </div>
-    </section>
-
-    <!-- 出站模式 + 系统代理 / TUN -->
-    <section class="dt-card mode-card">
-      <div class="card-title">出站模式</div>
-      <div class="mode-tiles">
-        <button v-for="[k, l] in modes" :key="k"
-                class="mode-tile"
-                :class="{ active: store.profile.mode === k }"
-                @click="setMode(k)">
-          <svg v-if="k === 'rule'" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M8 9h8M8 12h8M8 15h8" /></svg>
-          <svg v-else-if="k === 'global'" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2.5 2.5 2.5 13.5 0 16M12 4c-2.5 2.5-2.5 13.5 0 16" /></svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="2.5" /></svg>
-          <span>{{ l }}</span>
-        </button>
-      </div>
-      <div class="switch-list">
-        <label class="switch-row">
-          <span class="sw-label">系统代理</span>
-          <span class="sw-state" :class="{ on: sysproxyOn }">{{ sysproxyOn ? '开' : '关' }}</span>
-          <input type="checkbox" class="tgl" :checked="sysproxyOn" @change="onToggle('system_proxy', $event)" />
-        </label>
-        <label class="switch-row">
-          <span class="sw-label">TUN 模式</span>
-          <span class="sw-state" :class="{ on: tunOn }">{{ tunOn ? '开' : '关' }}</span>
-          <input type="checkbox" class="tgl" :checked="tunOn" @change="onToggle('enable_tun', $event)" />
-        </label>
-      </div>
-    </section>
-
-    <!-- 内网 IP -->
-    <section class="dt-card mini">
-      <div class="card-title">内网 IP
-        <button v-if="info?.lan_ip" class="mini-action" title="复制" @click="copyLan">复制</button>
-      </div>
-      <div class="mini-value mono">{{ info?.lan_ip || '—' }}</div>
-      <div class="mini-sub">代理端口 {{ info?.proxy_port ?? '—' }}</div>
     </section>
 
     <!-- 订阅 -->
@@ -507,29 +443,23 @@ onBeforeUnmount(() => {
       <div v-if="!services.length" class="mini-sub">{{ running ? '检测中…' : '代理未运行' }}</div>
     </section>
 
-    <!-- 内存 -->
-    <section class="dt-card mini">
-      <div class="card-title">内存</div>
-      <div class="mem-row"><span>本程序</span><b class="mono">{{ fmtBytes(info?.app_mem || 0) }}</b></div>
-       <div class="mem-row"><span>Mihomo</span><b class="mono">{{ running ? fmtBytes(info?.core_mem || 0) : '—' }}</b></div>
-    </section>
   </div>
 </template>
 
 <style scoped>
 .dash-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 18px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .dt-card {
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 16px 18px;
+  border-radius: 14px;
+  padding: 14px 16px;
   min-width: 0;
   overflow: hidden;
 }
@@ -541,7 +471,7 @@ onBeforeUnmount(() => {
   font-size: 14px;
   font-weight: 600;
   color: #374151;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .card-title .sub { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 400; }
 .card-title .chev { margin-left: auto; color: var(--muted); font-size: 16px; line-height: 1; }
@@ -550,12 +480,9 @@ onBeforeUnmount(() => {
 
 /* ---------- 状态卡 ---------- */
 .status-card {
-  grid-column: span 2;
-  grid-row: span 2;
+  grid-column: span 5;
   display: flex;
   flex-direction: column;
-  min-height: 232px;
-  padding-bottom: 18px;
 }
 .deco {
   position: absolute;
@@ -566,6 +493,8 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .st-head { display: flex; align-items: center; justify-content: space-between; position: relative; }
+.st-heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.st-heading .card-title { margin: 0; }
 .st-badge {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 10px; border-radius: 999px;
@@ -574,9 +503,9 @@ onBeforeUnmount(() => {
 .st-badge i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .st-badge.on  { background: #dcfce7; color: #166534; }
 .st-badge.off { background: #f1f5f9; color: #64748b; }
-.st-actions { display: flex; gap: 6px; }
+.st-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .ghost-btn {
-  width: 28px; height: 28px; padding: 0;
+  width: 30px; height: 30px; padding: 0;
   border: 1px solid var(--border); border-radius: 50%;
   background: #fff; color: #6b7280; font-size: 13px; line-height: 1;
   cursor: pointer;
@@ -585,31 +514,32 @@ onBeforeUnmount(() => {
 .ghost-btn:hover:not(:disabled) { color: var(--primary); border-color: #93c5fd; }
 .ghost-btn:disabled { opacity: .45; cursor: not-allowed; }
 
-.st-main { display: flex; align-items: center; gap: 16px; margin: 18px 0 16px; position: relative; flex: 1; }
+.st-main { display: flex; align-items: center; gap: 12px; margin: 12px 0; position: relative; }
 .cc-chip {
   flex-shrink: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  width: 66px; height: 66px;
-  border-radius: 18px;
+  width: 52px; height: 58px;
+  border-radius: 14px;
   background: #eff6ff;
   border: 1px solid #dbeafe;
 }
 .cc-chip.empty { background: #f8fafc; border-color: var(--border); }
-.cc-chip .flag { font-size: 28px; line-height: 1; }
+.cc-chip .flag { font-size: 23px; line-height: 1; }
 .cc-chip .cc { margin-top: 4px; font-size: 11px; font-weight: 700; letter-spacing: .5px; color: #1d4ed8; }
 .cc-chip.empty .cc { color: var(--muted); }
 
 .ip-box { min-width: 0; flex: 1; }
+.ip-label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
 .ip {
-  font-size: 28px; font-weight: 600; line-height: 1.15;
+  font-size: 26px; font-weight: 600; line-height: 1.15;
   font-variant-numeric: tabular-nums;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: #111827;
 }
 .ip.muted { color: var(--muted); font-size: 22px; font-weight: 500; }
-.tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.tags { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
 .tag {
-  padding: 1px 8px; border-radius: 999px;
+  padding: 1px 8px; border-radius: 999px; margin-left: 0;
   font-size: 11px; font-weight: 600;
   background: #f1f5f9; color: #475569;
 }
@@ -618,97 +548,86 @@ onBeforeUnmount(() => {
 .tag.q.risky  { background: #fee2e2; color: #991b1b; }
 .tag.infer    { background: #f8fafc; color: #94a3b8; font-weight: 500; }
 .org {
-  margin-top: 6px; font-size: 12px; color: var(--muted);
+  margin-top: 4px; font-size: 12px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+.lan-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
+  padding: 8px 10px; margin-bottom: 10px;
+  border-radius: 8px; background: #f8fafc; font-size: 12px;
+}
+.lan-label, .lan-port { color: var(--muted); font-size: 11px; }
+.lan-ip { color: #374151; font-weight: 600; }
+.lan-row .mini-action { margin-left: 0; }
+.lan-port { margin-left: auto; white-space: nowrap; }
+.lan-port b { color: #4b5563; font-weight: 500; }
+
 .st-meta {
-  display: flex; gap: 26px; flex-wrap: wrap;
-  padding-right: 84px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px;
   border-top: 1px solid #f1f5f9;
-  padding-top: 12px;
+  padding-top: 10px; margin-top: auto;
   position: relative;
 }
 .meta-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .meta-item .k { font-size: 11px; color: var(--muted); }
-.meta-item .v { font-size: 13px; font-weight: 600; color: #374151; max-width: 190px; }
+.meta-item .v { font-size: 12px; font-weight: 600; color: #374151; }
 
-.power-wrap { position: absolute; right: 16px; bottom: 14px; width: 68px; height: 68px; }
-.power-blob { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--primary); opacity: .16; }
 .power {
-  position: absolute; inset: 9px;
+  width: 30px; height: 30px; padding: 0;
   border: 0; border-radius: 50%;
   background: var(--primary);
   color: #fff; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, .3);
   transition: background .15s, transform .1s;
 }
 .power:hover { background: var(--primary-d); }
 .power:active { transform: scale(.96); }
-.power.off { background: #2563eb; }
-.power svg { width: 26px; height: 26px; fill: currentColor; }
+.power svg { width: 20px; height: 20px; fill: currentColor; }
 
-/* ---------- 网络速度 ---------- */
-.speed-card { grid-column: span 2; display: flex; flex-direction: column; }
-.speed-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; flex: 1; }
-.speed-tile {
-  position: relative; overflow: hidden;
-  background: #f3f4f6; border-radius: 14px;
-  padding: 12px 14px 46px; min-width: 0;
-}
-.tile-label { display: flex; align-items: center; gap: 6px; color: #4b5563; font-size: 13px; }
-.tile-label .arrow { font-weight: 700; }
-.speed-tile.down .arrow { color: var(--primary); }
-.tile-value { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; }
-.tile-value .num { font-size: 30px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
-.tile-value .unit { font-size: 14px; color: #4b5563; }
-.tile-meta {
-  display: flex; gap: 10px; flex-wrap: wrap;
-  margin-top: 6px; color: #6b7280; font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.tile-spark { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 42px; display: block; }
-.tile-spark .line { fill: none; stroke-width: 2; }
-.speed-tile.up .line { stroke: #93c5fd; }
-.speed-tile.up .area { fill: rgba(147, 197, 253, .25); }
-.speed-tile.down .line { stroke: var(--primary); }
-.speed-tile.down .area { fill: rgba(37, 99, 235, .15); }
+/* ---------- 流量统计 ---------- */
+.speed-card { grid-column: span 7; }
+.traffic-chart { padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: #f8fafc; }
+.chart-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 11px; }
+.chart-range { margin-right: auto; padding: 2px 7px; border-radius: 4px; background: #eef1f5; color: #64748b; }
+.up { --stat-color: #e78961; --stat-bg: #fff8f3; --icon-bg: #ffede3; }
+.down { --stat-color: #2583eb; --stat-bg: #f2f8ff; --icon-bg: #e0eeff; }
+.connections { --stat-color: #159951; --stat-bg: #f2faf5; --icon-bg: #ddf3e6; }
+.memory { --stat-color: #e0525c; --stat-bg: #fff5f5; --icon-bg: #ffe5e7; }
+.chart-legend { display: inline-flex; align-items: center; gap: 4px; color: var(--stat-color); }
+.chart-legend::before { content: ''; width: 12px; height: 2px; background: currentColor; }
+.chart-body { display: flex; gap: 8px; height: 88px; }
+.chart-scale { display: flex; flex-direction: column; justify-content: space-between; flex-shrink: 0; width: 58px; text-align: right; font-size: 9px; color: var(--muted); }
+.traffic-plot { display: block; width: 100%; min-width: 0; height: 100%; overflow: visible; }
+.chart-grid { fill: none; stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chart-line { fill: none; stroke: var(--stat-color); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.chart-times { display: flex; justify-content: space-between; margin: 5px 0 0 66px; color: var(--muted); font-size: 9px; }
+.traffic-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.traffic-stat { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--stat-bg); }
+.stat-icon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; color: var(--stat-color); background: var(--icon-bg); }
+.stat-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.stat-text { min-width: 0; }
+.stat-label { color: #4b5563; font-size: 11px; }
+.stat-value { margin-top: 2px; font-size: 16px; font-weight: 600; white-space: nowrap; }
+.stat-value small { font-size: 11px; font-weight: 400; }
 
-/* ---------- 出站模式 ---------- */
-.mode-card { grid-column: span 2; display: flex; flex-direction: column; }
-.mode-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.mode-tile {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
-  min-height: 62px; border: none; border-radius: 12px; background: #f3f4f6;
-  color: #374151; font-size: 13px; cursor: pointer;
-  transition: background .15s, color .15s;
-}
-.mode-tile svg {
-  width: 20px; height: 20px; fill: none; stroke: currentColor;
-  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
-}
-.mode-tile:hover { background: #e8edf7; color: var(--primary); }
-.mode-tile.active { background: var(--primary); color: #fff; }
-
-.switch-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid #f1f5f9; }
+.switch-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 12px; }
 .switch-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 4px 0; font-size: 13px; color: #374151; cursor: pointer;
+  padding: 9px 12px; border-radius: 999px; border: 1px solid var(--border);
+  background: #fafafa; font-size: 12px; font-weight: 600; color: #374151; cursor: pointer;
 }
 .sw-label { flex: 1; }
-.sw-state {
-  font-size: 11px; padding: 1px 8px; border-radius: 999px;
-  background: #f1f5f9; color: #64748b;
-}
-.sw-state.on { background: #dcfce7; color: #166534; }
-.tgl { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+.tgl { appearance: none; position: relative; flex-shrink: 0; width: 38px; height: 22px; margin: 0; border: 0; border-radius: 999px; background: #e5e7eb; cursor: pointer; transition: background .15s; }
+.tgl::before { content: ''; position: absolute; width: 16px; height: 16px; top: 3px; left: 3px; border-radius: 50%; background: #7b818c; transition: transform .15s, background .15s; }
+.tgl:checked { background: #0783fa; }
+.tgl:checked::before { background: #fff; transform: translateX(16px); }
+.tgl:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 
 /* ---------- 底部小卡 ---------- */
-.mini { min-height: 120px; display: flex; flex-direction: column; }
+.mini { grid-column: span 6; display: flex; flex-direction: column; }
 .mini.clickable { cursor: pointer; transition: border-color .15s; }
 .mini.clickable:hover { border-color: #93c5fd; }
-.mini-value { font-size: 20px; font-weight: 600; color: #111827; }
 .mini-sub { margin-top: 6px; font-size: 11px; color: var(--muted); }
 .mini-action {
   margin-left: auto; padding: 1px 8px;
@@ -739,23 +658,22 @@ onBeforeUnmount(() => {
 .svc-ms.mid  { color: #d97706; }
 .svc-ms.bad  { color: #dc2626; }
 
-.mem-row {
-  display: flex; align-items: baseline; justify-content: space-between;
-  padding: 4px 0; font-size: 12px; color: #4b5563;
-}
-.mem-row b { font-size: 14px; color: #111827; }
-
 @media (max-width: 1100px) {
-  .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .status-card { grid-column: span 2; grid-row: auto; }
-  .speed-card, .mode-card { grid-column: span 2; }
-  .st-meta { padding-right: 84px; }
+  .dash-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .status-card, .speed-card { grid-column: span 6; }
+  .mini { grid-column: span 3; }
 }
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .dash-grid { grid-template-columns: 1fr; }
-  .status-card, .speed-card, .mode-card { grid-column: span 1; }
-  .st-meta { padding-right: 0; padding-bottom: 78px; }
-  .power-wrap { right: 16px; bottom: 14px; }
-  .ip { font-size: 24px; }
+  .status-card, .speed-card, .mini { grid-column: span 1; }
+  .dt-card { padding: 12px; }
+  .st-meta { gap: 10px; }
+  .ip { font-size: 22px; }
+  .traffic-stat { padding: 8px; gap: 6px; }
+  .stat-icon { width: 24px; height: 24px; }
+  .stat-value { font-size: 14px; }
+}
+@media (max-width: 680px) {
+  .traffic-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>

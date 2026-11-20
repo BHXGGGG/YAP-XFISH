@@ -6,7 +6,7 @@ import { createServer } from 'vite'
 test('remaining latency tests follow results, failures and timeouts', async (t) => {
   const server = await createServer({
     root: fileURLToPath(new URL('..', import.meta.url)),
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, ws: false },
     appType: 'custom',
   })
   const originalLocation = globalThis.location

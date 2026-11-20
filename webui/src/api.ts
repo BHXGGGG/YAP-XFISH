@@ -98,6 +98,8 @@ export const api = {
   /** 设置节点链式前置代理；detour 为空字符串/null 表示清除 */
   setNodeDetour: (id: string, detour: string | null) =>
     req('POST', '/api/nodes/' + id + '/detour', { detour }),
+  setNodeDetours: (changes: { id: string; detour: string | null }[]) =>
+    req('POST', '/api/nodes/detours', changes),
   updateConfig: (c: any) => req('PUT', '/api/config', c),
   adminElevate: () => req('POST', '/api/admin/elevate'),
   memDebug: () => req('GET', '/api/debug/memory'),

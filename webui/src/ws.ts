@@ -32,11 +32,12 @@ export function connectWs() {
         store.status.system_proxy = !!ev.system_proxy
         store.status.enable_tun = !!ev.enable_tun
       } else if (ev.type === 'traffic') {
-              store.status.traffic_up = ev.up
-              store.status.traffic_down = ev.down
-              store.status.up_rate = ev.up_rate ?? 0
-              store.status.down_rate = ev.down_rate ?? 0
-            } else if (ev.type === 'log') {
+        store.status.traffic_up = ev.up
+        store.status.traffic_down = ev.down
+        store.status.up_rate = ev.up_rate ?? 0
+        store.status.down_rate = ev.down_rate ?? 0
+        store.status.active_connections = ev.active_connections ?? 0
+      } else if (ev.type === 'log') {
         store.logs.unshift({
           ts: Date.now(),
           level: ev.level || 'info',

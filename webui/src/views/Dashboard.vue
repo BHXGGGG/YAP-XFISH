@@ -7,6 +7,13 @@ import Modal from '../components/Modal.vue'
 import AddSubscriptionForm from '../components/AddSubscriptionForm.vue'
 import DashboardTop from '../components/DashboardTop.vue'
 
+const modes = [['rule', '规则'], ['global', '全局'], ['direct', '直连']]
+
+async function setMode(mode: string) {
+  if (store.profile.mode === mode) return
+  try { await api.setMode(mode); toast('已切换模式') } catch (e: any) { toast(e.message) }
+}
+
 const PROTOCOL_META: Record<string, { label: string; color: string }> = {
   shadowsocks: { label: 'SS',     color: '#0ea5e9' },
   ss:          { label: 'SS',     color: '#0ea5e9' },
@@ -237,7 +244,16 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 
 <template>
   <section>
-    <h2>仪表盘</h2>
+    <header class="dashboard-head">
+      <h2>仪表盘</h2>
+      <div class="mode-buttons" role="group" aria-label="出站模式">
+        <button v-for="[key, label] in modes" :key="key"
+                :class="{ active: store.profile.mode === key }"
+                :aria-pressed="store.profile.mode === key" @click="setMode(key)">
+          {{ label }}
+        </button>
+      </div>
+    </header>
 
     <DashboardTop
       @toggle="toggleConfigFlag"
@@ -257,7 +273,7 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
       <div class="row-inline">
         <button :class="{ active: sortByLatency }"
                 @click="sortByLatency = !sortByLatency">按延迟排序</button>
-        <button class="primary" @click="testAll">测试全部延迟</button>
+        <button :class="{ primary: testingCount > 0 }" :aria-busy="testingCount > 0" @click="testAll">测试全部延迟</button>
         <span v-if="testingCount" class="meta-testing" role="status">剩余 {{ testingCount }} 个节点测速中</span>
       </div>
     </div>
@@ -347,6 +363,12 @@ watch(() => store.subscriptions?.length ?? 0, (n) => {
 </template>
 
 <style scoped>
+.dashboard-head { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+.dashboard-head h2 { margin: 0; }
+.mode-buttons { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+.mode-buttons button { padding: 5px 14px; border: 0; border-radius: 6px; font-size: 12px; }
+.mode-buttons button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
 .section-head {
   display: flex; align-items: center;
   margin: 8px 0 8px; gap: 8px; flex-wrap: wrap;
